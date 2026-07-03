@@ -24,6 +24,7 @@
 #include "frame_proto.h"
 #include "v4l2_capture.h"
 #include "tcp_socket.h"
+#include "fb_display.h"
 
 /* 全局标志，用于信号处理优雅退出 */
 static volatile sig_atomic_t g_running = 1;
@@ -80,9 +81,10 @@ static void usage(const char *prog)
         "  -h <height>   Image height, default 480\n"
         "  -f <fmt>      Pixel format: RGB565, YUYV, MJPEG (default RGB565)\n"
         "  -n <frames>   Number of frames to send, 0=unlimited (default 0)\n"
+        "  -l            Enable local LCD display via /dev/fb0\n"
         "\n"
         "Example:\n"
-        "  %s -d /dev/video1 -s 192.168.1.100 -p 5000 -w 640 -h 480 -f RGB565 -n 0\n",
+        "  %s -d /dev/video1 -s 192.168.1.100 -p 5000 -w 640 -h 480 -f RGB565 -n 0 -l\n",
         prog, prog);
 }
 
@@ -95,15 +97,17 @@ int main(int argc, char *argv[])
     uint32_t req_height = 480;
     uint32_t req_pixfmt = V4L2_PIX_FMT_RGB565;
     int max_frames = 0;  /* 0 = unlimited */
+    int enable_lcd = 0;  /* -l flag */
     int opt;
 
     struct v4l2_context ctx;
+    struct fb_display fb;
     int sockfd = -1;
     uint32_t frame_id = 0;
     int ret;
 
     /* 解析命令行参数 */
-    while ((opt = getopt(argc, argv, "d:s:p:w:h:f:n:")) != -1) {
+    while ((opt = getopt(argc, argv, "d:s:p:w:h:f:n:l")) != -1) {
         switch (opt) {
         case 'd': devname = optarg; break;
         case 's': server_ip = optarg; break;
@@ -119,6 +123,7 @@ int main(int argc, char *argv[])
             }
             break;
         case 'n': max_frames = atoi(optarg); break;
+        case 'l': enable_lcd = 1; break;
         default:
             usage(argv[0]);
             return 1;
@@ -164,7 +169,15 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* 3. 采集 + 发送循环 */
+    /* 3. 初始化 framebuffer (可选) */
+    if (enable_lcd) {
+        if (fb_display_init(&fb, "/dev/fb0") < 0) {
+            fprintf(stderr, "[WARN] LCD init failed, continuing without display\n");
+            enable_lcd = 0;
+        }
+    }
+
+    /* 4. 采集 + 发送循环 */
     printf("[INFO] Starting capture loop (Ctrl+C to stop)...\n");
 
     while (g_running && (max_frames == 0 || (int)frame_id < max_frames)) {
@@ -192,6 +205,12 @@ int main(int argc, char *argv[])
             }
             fprintf(stderr, "[ERROR] v4l2_get_frame failed (ret=%d)\n", ret);
             break;
+        }
+
+        /* 显示到 LCD */
+        if (enable_lcd) {
+            fb_display_show_frame(&fb, data, ctx.width, ctx.height,
+                                  ctx.pixfmt);
         }
 
         /* 构造帧头 */
@@ -235,11 +254,14 @@ int main(int argc, char *argv[])
 
     printf("[INFO] Sent %u frames total\n", frame_id);
 
-    /* 4. 清理 */
+    /* 5. 清理 */
     printf("[INFO] Cleaning up...\n");
     if (sockfd >= 0) {
         close(sockfd);
         printf("[INFO] Socket closed\n");
+    }
+    if (enable_lcd) {
+        fb_display_deinit(&fb);
     }
     v4l2_deinit(&ctx);
     printf("[INFO] Done.\n");

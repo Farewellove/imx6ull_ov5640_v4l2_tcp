@@ -65,6 +65,9 @@ ARM_V4L2_INFO_OBJ := $(ARM_DIR)/v4l2_info.o
 ARM_SENDER_BIN := $(ARM_DIR)/imx6ull_sender
 ARM_SENDER_OBJ := $(ARM_DIR)/imx6ull_sender.o
 
+# fb_display 仅板端使用, 不加入 PC 编译
+ARM_FB_DISPLAY_OBJ := $(ARM_DIR)/fb_display.o
+
 ARM_BINS := $(ARM_V4L2_INFO_BIN) $(ARM_SENDER_BIN)
 
 # ---- PC 目标 ----
@@ -107,7 +110,7 @@ $(ARM_V4L2_INFO_BIN): $(ARM_V4L2_INFO_OBJ) $(ARM_COMMON_OBJS)
 	@echo "  [ARM] LD    $@"
 	$(ARM_CC) $(ARM_CFLAGS) -o $@ $^ $(LDFLAGS)
 
-$(ARM_SENDER_BIN): $(ARM_SENDER_OBJ) $(ARM_COMMON_OBJS)
+$(ARM_SENDER_BIN): $(ARM_SENDER_OBJ) $(ARM_COMMON_OBJS) $(ARM_FB_DISPLAY_OBJ)
 	@echo "  [ARM] LD    $@"
 	$(ARM_CC) $(ARM_CFLAGS) -o $@ $^ $(LDFLAGS)
 
