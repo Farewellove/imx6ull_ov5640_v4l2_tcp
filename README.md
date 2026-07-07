@@ -26,15 +26,21 @@ imx6ull_ov5640_v4l2_tcp/
 
 - **v4l2_info**: 查询摄像头完整能力信息（QUERYCAP, G_FMT, G_PARM, ENUM_FMT, ENUM_FRAMESIZES, ENUM_FRAMEINTERVALS）
 - **imx6ull_sender**: 在 i.MX6ULL 板端通过 V4L2 MMAP 采集 OV5640 图像，可选同步显示到开发板 LCD，并以自定义帧协议通过 TCP 发送到 PC
-- **pc_receiver**: PC 端作为 TCP Server 接收图像帧，保存为 raw 文件；对 RGB565 额外保存 PPM 格式方便直接查看
+- **pc_receiver**: PC 端作为 TCP Server 接收图像帧，保存为 raw 文件；可选 SDL2 实时显示窗口 (`-d`)，支持多格式自动转换、`--force-*` 手动覆盖和按键切换调试
 
 ### 支持的像素格式
 
-| 格式   | V4L2 常量           | 说明                         |
-|--------|---------------------|------------------------------|
-| RGB565 | V4L2_PIX_FMT_RGB565 | 16-bit 彩色，保存 PPM 可查看 |
-| YUYV   | V4L2_PIX_FMT_YUYV   | YUV 4:2:2，保存 raw         |
-| MJPEG  | V4L2_PIX_FMT_MJPEG  | Motion JPEG，保存 .mjpg     |
+| 格式     | V4L2 常量             | 说明                              |
+|----------|-----------------------|-----------------------------------|
+| RGB565   | V4L2_PIX_FMT_RGB565   | 16-bit 彩色, little-endian       |
+| RGB565X  | V4L2_PIX_FMT_RGB565X  | 16-bit 彩色, big-endian          |
+| BGR565   | (项目内部)             | 16-bit 彩色, R/B 交换, LE        |
+| BGR565X  | (项目内部)             | 16-bit 彩色, R/B 交换, BE        |
+| YUYV     | V4L2_PIX_FMT_YUYV     | YUV 4:2:2, YUYV 顺序             |
+| UYVY     | V4L2_PIX_FMT_UYVY     | YUV 4:2:2, UYVY 顺序             |
+| MJPEG    | V4L2_PIX_FMT_MJPEG    | Motion JPEG 压缩                 |
+
+> **重要**: S_FMT 之后使用驱动**实际返回**的 pixfmt，即使与用户请求不同。发送端和接收端均以实际格式为准。
 
 ## 2. 编译方法
 
@@ -108,19 +114,19 @@ ls -l /dev/video*
 
 ```bash
 # 基本用法: 采集 + TCP 发送
-./imx6ull_sender -d /dev/video1 -s 192.168.1.100 -p 5000 -w 640 -h 480 -f RGB565
+./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 -w 640 -h 480 -f RGB565
 
 # 同时显示到开发板 LCD (需连接 4.3"/7" RGB LCD)
-./imx6ull_sender -d /dev/video1 -s 192.168.1.100 -p 5000 -f RGB565 -l
+./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 -f RGB565 -l
 
 # MJPEG 格式 (带宽低，适合无线)
-./imx6ull_sender -d /dev/video1 -s 192.168.1.100 -p 5000 -f MJPEG
+./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 -f MJPEG
 
 # 低分辨率 YUYV
-./imx6ull_sender -d /dev/video1 -s 192.168.1.100 -w 320 -h 240 -f YUYV
+./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -w 320 -h 240 -f YUYV
 
 # 发送 100 帧后自动停止
-./imx6ull_sender -d /dev/video1 -s 192.168.1.100 -n 100
+./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -n 100
 ```
 
 ### 3.3 参数说明
@@ -151,11 +157,58 @@ ls -l /dev/video*
 ### 4.1 启动接收程序
 
 ```bash
-# 在 PC 端先启动接收 (默认端口 5000)
+# 保存帧到磁盘 (默认)
 ./pc_receiver -p 5000 -o ./frames
+
+# 保存帧 + SDL2 实时显示窗口 (推荐)
+./pc_receiver -p 5000 -o ./frames -d
+
+# 只显示不保存
+./pc_receiver -p 5000 -d
 ```
 
-### 4.2 接收结果
+### 4.2 SDL2 实时显示 (-d)
+
+使用 `-d` 参数会弹出一个 SDL2 窗口，实时显示摄像头画面：
+
+- **默认解码**: BGR565 LE（i.MX6ULL CSI R/B 通道交换）
+- **多格式支持**: RGB565/RGB565X/BGR565/BGR565X/YUYV/UYVY 自动转换为 RGB888
+- **窗口标题实时显示**: `hdr=RGB565_LE | disp=BGR565_LE`
+- **按键切换调试**:
+  - `1` = RGB565_LE, `2` = RGB565X_BE, `3` = BGR565_LE(DEFAULT), `4` = BGR565X_BE
+  - `5` = YUYV, `6` = UYVY, `0` = 使用帧头格式
+  - `ESC` / `Q` = 关闭窗口退出
+- **窗口缩放**: 支持拖拽缩放，画面自适应
+- **依赖**: 需要安装 `libsdl2-dev`
+
+```bash
+# 安装 SDL2 (一次性)
+sudo apt install libsdl2-dev
+```
+
+### 4.3 指定解码格式 (--display-format / --swap-rb)
+
+当颜色异常时，使用以下参数手动指定解码格式：
+
+```bash
+# 默认 BGR565 (i.MX6ULL CSI R/B 已交换的推荐模式)
+./pc_receiver -p 5000 -d
+
+# 显式指定 BGR565
+./pc_receiver -p 5000 -d --display-format bgr565
+./pc_receiver -p 5000 -d --swap-rb
+
+# 切换回 RGB565 (标准顺序)
+./pc_receiver -p 5000 -d --display-format rgb565
+
+# 尝试其他格式
+./pc_receiver -p 5000 -d --display-format rgb565x
+./pc_receiver -p 5000 -d --display-format yuyv
+```
+
+> PPM 保存使用与 SDL 显示**相同**的解码器，保证窗口和文件颜色一致。
+
+### 4.4 接收结果
 
 收到的文件保存在 `./frames/` 目录下：
 
@@ -184,42 +237,139 @@ frames/
 ├── ...
 ```
 
-### 4.3 参数说明
+### 4.5 参数说明
 
-| 参数 | 说明         | 默认值     |
-|------|-------------|-----------|
-| -p   | 监听端口    | 5000      |
-| -o   | 保存目录    | ./frames  |
+| 参数              | 说明                      | 默认值    |
+|-------------------|--------------------------|-----------|
+| -p                | 监听端口                   | 5000      |
+| -o                | 保存目录                   | ./frames  |
+| -d                | 启用 SDL2 实时显示          | 关闭      |
+| --force-rgb565    | 强制按 RGB565 LE 解析      | -         |
+| --force-rgb565x   | 强制按 RGB565X BE 解析     | -         |
+| --force-bgr565    | 强制按 BGR565 LE 解析      | -         |
+| --force-bgr565x   | 强制按 BGR565X BE 解析     | -         |
+| --force-yuyv      | 强制按 YUYV 解析           | -         |
+| --force-uyvy      | 强制按 UYVY 解析           | -         |
+
+> 这些 --force-* 参数也可通过 SDL 窗口按键 `1`-`6` 实时切换。
 
 ## 5. 推荐测试流程
 
-### 5.1 完整测试步骤
+### 5.1 快速开始 (默认 YUYV)
 
-1. **PC 端**: 先启动接收程序
-   ```bash
-   ./pc_receiver -p 5000 -o ./test_frames
-   ```
+```bash
+# 1. PC 端: 启动接收 (自动检测帧头格式)
+./pc_receiver -p 5000 -o ./test_frames -d
 
-2. **板端**: 先查询摄像头能力
-   ```bash
-   ./v4l2_info /dev/video1
-   ```
+# 2. 板端: 启动发送 (默认 YUYV)
+./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000
+```
 
-3. **板端**: 启动采集发送
-   ```bash
-   # 不启用 LCD
-   ./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 -f RGB565
+### 5.2 YUV 字节顺序测试
 
-   # 启用 LCD 同步显示
-   ./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 -f RGB565 -l
-   ```
+当使用 YUYV 格式时，如果 PC 端颜色异常 (偏紫/偏绿)，可能是 YUV 字节顺序不匹配:
 
-4. **验证**: 在 PC 端查看收到的帧
-   ```bash
-   ls -lh test_frames/
-   eog test_frames/frame_000000.ppm   # GNOME
-   display test_frames/frame_000000.ppm  # ImageMagick
-   ```
+```bash
+# 板端指定 YUV 字节顺序 (默认 yuyv)
+./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 --yuv-order uyvy
+./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 --yuv-order yvyu
+
+# PC 端也可指定 YUV 顺序覆盖
+./pc_receiver -p 5000 -d --yuv-order uyvy
+./pc_receiver -p 5000 -d --yuv-order yvyu
+```
+
+> 当前驱动准备切回 YUYV 全链路，若 S_FMT 返回 YUYV 则直接使用。
+
+### 5.3 OV5640 颜色异常排查 (板端诊断)
+
+#### Step 1: 查询摄像头能力
+
+```bash
+./v4l2_info /dev/video1
+```
+
+观察输出中的 `ENUM_FMT` 部分，确认驱动支持哪些格式。
+
+#### Step 2: 测试格式协商
+
+```bash
+./v4l2_format_test /dev/video1 640 480 rgb565
+./v4l2_format_test /dev/video1 640 480 yuyv
+./v4l2_format_test /dev/video1 640 480 uyvy
+```
+
+观察 `S_FMT` 和 `G_FMT` 返回的格式：
+- 如果请求 `rgb565` 返回 `RGBP` → RGB565 可用
+- 如果请求 `yuyv` 返回 `RGBP` → YUYV 不支持，驱动回退到 RGB565
+- 如果请求 `yuyv` 返回 `YUYV` → YUYV 可用
+
+#### Step 3: 板端启动 sender 观察日志
+
+```bash
+./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 --pixfmt rgb565
+```
+
+关键日志行：
+```
+[INFO] Capture using driver actual format:
+[INFO]   Format       : RGB565 (LE) (0x50424752)
+[INFO]   Resolution   : 640x480
+[INFO]   BytesPerLine : 1280
+[INFO]   SizeImage    : 614400
+[INFO]   NOTE: i.MX6ULL CSI may swap R/B. PC use: pc_receiver -d (default BGR565)
+```
+
+#### Step 4: PC 端测试不同解码方式
+
+```bash
+# 默认 BGR565 (推荐)
+./pc_receiver -p 5000 -o ./frames -d --display-format bgr565
+
+# 标准 RGB565
+./pc_receiver -p 5000 -o ./frames -d --display-format rgb565
+
+# 或在 SDL 窗口中按键 1-6 实时切换
+```
+
+#### Step 5: 已确认的颜色现象
+
+| 解码方式      | 画面表现                   | 结论                  |
+|--------------|---------------------------|----------------------|
+| RGB565_LE    | 结构正确但整体偏蓝绿         | R/B 通道交换           |
+| **BGR565_LE** | **结构正确且颜色最接近正常** ✅ | **当前推荐**           |
+| RGB565X_BE   | 颜色严重异常                | 不是大端字节序          |
+| BGR565X_BE   | 颜色严重异常                | 不是大端字节序          |
+| YUYV         | 严重紫绿噪点                | 数据不是 YUV 4:2:2     |
+| UYVY         | 严重紫绿噪点                | 数据不是 YUV 4:2:2     |
+
+**结论**: 驱动报告 RGB565，但 i.MX6ULL CSI 硬件交换了 R/B 通道。
+PC 端默认使用 BGR565_LE 解码即可获得正常颜色。
+
+### 5.3 当前驱动已知限制
+
+经过完整测试确认，当前 mx6s-csi + OV5640 驱动存在以下行为：
+
+| 现象 | 说明 |
+|------|------|
+| VIDIOC_G_FMT 返回无效值 | pixelformat=0, bytesperline=0。**不可靠，不能作为格式依据。** |
+| VIDIOC_S_FMT 校验不严格 | 接受未在 ENUM_FMT 中列出的格式 (如 UYVY)，不能仅凭 S_FMT 判断 sensor 实际输出。 |
+| ENUM_FMT 列出 RGBP/JPEG/YUYV | 未列出 UYVY，说明 UYVY 请求即使 S_FMT 接受也可能是假成功。 |
+| RGB565_LE 显示偏蓝绿 | i.MX6ULL CSI R/B 通道交换，需 BGR565_LE 解码。 |
+
+**当前推荐**:
+- 板端 sender 使用默认 YUYV: `./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000`
+- PC 端自动检测帧头格式: `./pc_receiver -p 5000 -o ./frames -d`
+- 若 YUV 字节顺序不匹配: `--yuv-order uyvy` / `--yuv-order yvyu`
+- 驱动层 YUYV 修复后将不再需要 BGR565 workaround
+
+### 5.3 验证收到的帧
+
+```bash
+ls -lh test_frames/
+eog test_frames/frame_000000.ppm   # GNOME
+display test_frames/frame_000000.ppm  # ImageMagick
+```
 
 ### 5.2 带宽参考
 
@@ -415,14 +565,100 @@ dmesg | grep -i "ov5640\|mipi\|csi\|stream"
 - 确认 poll 返回 POLLIN 后才调用 DQBUF
 - 如果是阻塞在 DQBUF (没有 O_NONBLOCK 的旧情况)，给 open 加上 `O_NONBLOCK`
 
-### 9.6 图像颜色不对
+### 9.6 图像颜色异常排查
 
-**常见情况和解决方法**:
+这是最常见的显示问题。按以下步骤逐步排查：
 
-1. **YUYV 当成 RGB565 显示**: 修改 -f 参数匹配实际格式
-2. **UYVY vs YUYV 字节序反了**: 确认传感器输出的 YUV 顺序，可能需要修改 / 添加 UYVY 支持
-3. **RGB565 字节序 (RGB vs BGR)**: 修改 `save_rgb565_as_ppm` 中的颜色转换
-4. **色彩空间不对**: 检查 `VIDIOC_S_FMT` 后驱动返回的实际格式，程序会打印
+#### Step 1: 确认板端驱动实际输出的格式
+
+板端 `imx6ull_sender` 启动时查看日志输出：
+
+```
+[INFO] Capture using driver actual format:
+[INFO]   Format       : YUYV (4:2:2) (0x56595559)
+```
+
+如果显示 `YUYV` 或 `UYVY`，说明驱动实际返回的不是 RGB565。
+
+#### Step 2: 确认 PC 端收到的格式
+
+PC 端 `pc_receiver` 每帧会打印 `hdr=XXXX`：
+
+```
+[FRAME 0] ... hdr=YUYV (4:2:2), ts=...
+```
+
+#### Step 3: 根据症状选择排查方案
+
+| 症状                           | 可能原因              | 解决方法                                    |
+|-------------------------------|----------------------|---------------------------------------------|
+| 画面轮廓正确但整体蓝绿/偏绿      | 实际为 YUYV/UYVY     | `--force-yuyv` 或 `--force-uyvy`            |
+| 画面红蓝反了 (天空偏红)         | BGR565 字节序        | `--force-bgr565` 或 SDL 窗口按 `3`           |
+| 颜色严重异常但轮廓正确           | RGB565X BE 字节序    | `--force-rgb565x` 或 SDL 窗口按 `2`          |
+| 画面全是灰/紫色噪点             | 字节序完全反了         | 依次尝试 `4`, `5`, `6` 按键                  |
+| 画面颜色偏暗/偏亮               | RGB565→RGB888 范围   | 检查 BT.601 转换公式 (通常正确)              |
+
+#### Step 4: 使用 SDL 按键实时切换
+
+启动 `pc_receiver -d` 后，在画面窗口中按键快速切换：
+
+```bash
+# 按 1 → RGB565 (默认)
+# 按 5 → YUYV (最常见的实际格式)
+# 按 6 → UYVY
+# 按 2 → RGB565X (big-endian)
+# 按 3 → BGR565 (红蓝交换)
+# 按 4 → BGR565X
+# 按 0 → 恢复帧头中的格式
+```
+
+哪个按键画面颜色正常，就说明原始数据是哪种格式。找到正确格式后可：
+- 使用 `--force-*` 参数指定 (每次启动生效)
+- 或修改板端 `-f` 参数匹配实际格式 (根本解决)
+
+#### Step 5: 命令行快速试错
+
+```bash
+# 默认就是 BGR565（i.MX6ULL CSI R/B 交换），通常不需要额外参数
+./pc_receiver -p 5000 -o ./frames -d
+
+# 如果颜色仍然不对，依次尝试:
+./pc_receiver -p 5000 -o ./frames -d --display-format rgb565   # 标准 RGB565
+./pc_receiver -p 5000 -o ./frames -d --display-format rgb565x  # BE 字节序
+./pc_receiver -p 5000 -o ./frames -d --display-format yuyv     # YUYV
+./pc_receiver -p 5000 -o ./frames -d --display-format uyvy     # UYVY
+```
+
+#### Step 6: 已确认的 i.MX6ULL CSI 颜色问题
+
+经过对 6 种解码模式的完整测试，结论如下：
+
+| 模式 | 结果 | 说明 |
+|------|------|------|
+| RGB565 LE  | 画面正常，但蓝绿色偏 | R/B 通道交换 |
+| RGB565X BE | 颜色严重异常 | 不是大端 |
+| **BGR565 LE** | **颜色最接近正常** ✅ | **默认解码模式** |
+| BGR565X BE | 颜色严重异常 | 不是大端 |
+| YUYV       | 紫色噪点 | 不是 YUV 数据 |
+| UYVY       | 紫色噪点 | 不是 YUV 数据 |
+
+**结论**: 数据本质是 16-bit 小端 RGB565，但 i.MX6ULL CSI 接口交换了 R/B 通道。
+PC 端默认使用 **BGR565 LE** 解码即可获得正常颜色。
+
+#### Step 7: 推荐运行命令
+
+```bash
+# PC 端 (默认 BGR565，直接使用)
+./pc_receiver -p 5000 -o ./frames -d
+
+# 或显式指定
+./pc_receiver -p 5000 -o ./frames -d --display-format bgr565
+./pc_receiver -p 5000 -o ./frames -d --swap-rb
+```
+
+> **关键原则**: 
+> 1. 不要假设驱动返回了你请求的格式。板端日志打印驱动**实际** pixfmt。
+> 2. i.MX6ULL CSI 输出 RGB565 时 R/B 通道交换，PC 端用 BGR565 解码。
 
 ### 9.7 网络带宽不够
 
@@ -456,15 +692,16 @@ dmesg | grep -i "fb\|mxsfb"
 
 ## 10. Makefile 目标速查
 
-| 命令            | 说明                                   |
-|----------------|---------------------------------------|
-| `make`         | 编译板端程序 (默认)                     |
-| `make arm`     | 只编译板端 v4l2_info + imx6ull_sender |
-| `make pc`      | 只编译 PC 端 pc_receiver               |
-| `make allboth` | 同时编译 ARM 和 PC                     |
-| `make install` | 安装板端程序到 NFS rootfs              |
-| `make clean`   | 清理所有编译产物                        |
-| `make help`    | 显示帮助                               |
+| 命令             | 说明                                            |
+|-----------------|------------------------------------------------|
+| `make`          | 编译板端程序 (imx6ull_sender)                   |
+| `make arm`      | 只编译板端 imx6ull_sender                       |
+| `make arm-tools`| 编译诊断工具 v4l2_info + v4l2_format_test       |
+| `make pc`       | 只编译 PC 端 pc_receiver                        |
+| `make allboth`  | 同时编译 ARM + PC + tools                       |
+| `make install`  | 安装板端程序 + 工具到 NFS rootfs                 |
+| `make clean`    | 清理所有编译产物                                 |
+| `make help`     | 显示帮助                                        |
 
 ## 11. 平台信息
 

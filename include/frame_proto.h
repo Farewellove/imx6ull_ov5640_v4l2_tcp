@@ -12,58 +12,122 @@
 
 #include <stdint.h>
 
-/* 帧魔数，标识数据流边界 */
+/* 帧魔数 */
 #define FRAME_MAGIC     0x12345678
-
-/* 协议版本 */
 #define FRAME_VERSION   1
 
-/* 像素格式枚举 (复用 V4L2 定义值) */
+/* ================================================================
+ * 像素格式定义
+ * ================================================================ */
+
 #ifndef V4L2_PIX_FMT_RGB565
-#define V4L2_PIX_FMT_RGB565  0x50424752  /* 'R' 'G' 'B' 'P' (little-endian) = RGBP = RGB565 */
+#define V4L2_PIX_FMT_RGB565    0x50424752  /* 'R' 'G' 'B' 'P' = RGBP */
 #endif
-
+#ifndef V4L2_PIX_FMT_RGB565X
+#define V4L2_PIX_FMT_RGB565X   0x50524742
+#endif
 #ifndef V4L2_PIX_FMT_YUYV
-#define V4L2_PIX_FMT_YUYV    0x56595559  /* 'Y' 'U' 'Y' 'V' */
+#define V4L2_PIX_FMT_YUYV      0x56595559  /* 'Y' 'U' 'Y' 'V' */
 #endif
-
+#ifndef V4L2_PIX_FMT_UYVY
+#define V4L2_PIX_FMT_UYVY      0x59565955  /* 'U' 'Y' 'V' 'Y' */
+#endif
 #ifndef V4L2_PIX_FMT_MJPEG
-#define V4L2_PIX_FMT_MJPEG   0x47504A4D  /* 'M' 'J' 'P' 'G' */
+#define V4L2_PIX_FMT_MJPEG     0x47504A4D  /* 'M' 'J' 'P' 'G' */
 #endif
 
-/* 帧头结构 (40 bytes) */
+/* 项目内部自定义 FOURCC */
+#define PIX_FMT_BGR565         0x40000001  /* BGR565 LE */
+#define PIX_FMT_BGR565X        0x40000002  /* BGR565 BE */
+#define PIX_FMT_YVYU           0x40000010  /* YVYU 4:2:2 */
+#define PIX_FMT_VYUY           0x40000011  /* VYUY 4:2:2 */
+
+/* ================================================================
+ * 帧头结构 (40 bytes)
+ * ================================================================ */
 struct frame_header {
-    uint32_t magic;         /* 魔数 FRAME_MAGIC */
-    uint32_t version;       /* 协议版本 */
-    uint32_t header_size;   /* 帧头大小 (sizeof(struct frame_header)) */
-    uint32_t width;         /* 图像宽度 */
-    uint32_t height;        /* 图像高度 */
-    uint32_t pixfmt;        /* 像素格式 (V4L2_PIX_FMT_xxx) */
-    uint32_t size;          /* 图像数据长度 (bytes) */
-    uint32_t frame_id;      /* 帧序号 (从0递增) */
-    uint64_t timestamp_us;  /* 采集时间戳 (微秒) */
+	uint32_t magic;
+	uint32_t version;
+	uint32_t header_size;
+	uint32_t width;
+	uint32_t height;
+	uint32_t pixfmt;
+	uint32_t size;
+	uint32_t frame_id;
+	uint64_t timestamp_us;
 };
 
-/* 像素格式名称辅助函数 */
-static inline const char *pixfmt_to_name(uint32_t pixfmt)
+/* ================================================================
+ * 辅助函数
+ * ================================================================ */
+static inline const char *pixfmt_to_string(uint32_t pixfmt)
 {
-    switch (pixfmt) {
-    case V4L2_PIX_FMT_RGB565: return "RGB565";
-    case V4L2_PIX_FMT_YUYV:   return "YUYV";
-    case V4L2_PIX_FMT_MJPEG:  return "MJPEG";
-    default:                   return "UNKNOWN";
-    }
+	switch (pixfmt) {
+	case V4L2_PIX_FMT_RGB565:  return "RGB565_LE";
+	case V4L2_PIX_FMT_RGB565X: return "RGB565X_BE";
+	case V4L2_PIX_FMT_YUYV:    return "YUYV";
+	case V4L2_PIX_FMT_UYVY:    return "UYVY";
+	case PIX_FMT_YVYU:         return "YVYU";
+	case PIX_FMT_VYUY:         return "VYUY";
+	case V4L2_PIX_FMT_MJPEG:   return "MJPEG";
+	case PIX_FMT_BGR565:       return "BGR565_LE";
+	case PIX_FMT_BGR565X:      return "BGR565X_BE";
+	default:                   return "UNKNOWN";
+	}
 }
 
-/* 像素格式文件扩展名 */
+static inline const char *pixfmt_to_name(uint32_t pixfmt)
+{
+	switch (pixfmt) {
+	case V4L2_PIX_FMT_RGB565:  return "RGB565";
+	case V4L2_PIX_FMT_RGB565X: return "RGB565X";
+	case V4L2_PIX_FMT_YUYV:    return "YUYV";
+	case V4L2_PIX_FMT_UYVY:    return "UYVY";
+	case PIX_FMT_YVYU:         return "YVYU";
+	case PIX_FMT_VYUY:         return "VYUY";
+	case V4L2_PIX_FMT_MJPEG:   return "MJPEG";
+	case PIX_FMT_BGR565:       return "BGR565";
+	case PIX_FMT_BGR565X:      return "BGR565X";
+	default:                   return "UNKNOWN";
+	}
+}
+
 static inline const char *pixfmt_to_ext(uint32_t pixfmt)
 {
-    switch (pixfmt) {
-    case V4L2_PIX_FMT_RGB565: return "rgb565";
-    case V4L2_PIX_FMT_YUYV:   return "yuyv";
-    case V4L2_PIX_FMT_MJPEG:  return "mjpg";
-    default:                   return "raw";
-    }
+	switch (pixfmt) {
+	case V4L2_PIX_FMT_RGB565:
+	case V4L2_PIX_FMT_RGB565X:
+	case PIX_FMT_BGR565:
+	case PIX_FMT_BGR565X:      return "rgb565";
+	case V4L2_PIX_FMT_YUYV:
+	case V4L2_PIX_FMT_UYVY:
+	case PIX_FMT_YVYU:
+	case PIX_FMT_VYUY:         return "yuv";
+	case V4L2_PIX_FMT_MJPEG:   return "mjpg";
+	default:                   return "raw";
+	}
+}
+
+static inline int pixfmt_is_rgb_variant(uint32_t pixfmt)
+{
+	return (pixfmt == V4L2_PIX_FMT_RGB565  ||
+	        pixfmt == V4L2_PIX_FMT_RGB565X ||
+	        pixfmt == PIX_FMT_BGR565       ||
+	        pixfmt == PIX_FMT_BGR565X);
+}
+
+static inline int pixfmt_is_yuv422(uint32_t pixfmt)
+{
+	return (pixfmt == V4L2_PIX_FMT_YUYV ||
+	        pixfmt == V4L2_PIX_FMT_UYVY ||
+	        pixfmt == PIX_FMT_YVYU      ||
+	        pixfmt == PIX_FMT_VYUY);
+}
+
+static inline int pixfmt_is_displayable(uint32_t pixfmt)
+{
+	return (pixfmt_is_rgb_variant(pixfmt) ||
+	        pixfmt_is_yuv422(pixfmt));
 }
 
 #endif /* FRAME_PROTO_H */
