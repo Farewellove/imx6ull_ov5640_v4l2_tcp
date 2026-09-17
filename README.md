@@ -12,15 +12,25 @@ imx6ull_ov5640_v4l2_tcp/
 │   ├── tcp_socket.h       # TCP Socket 封装 API
 │   └── fb_display.h       # Framebuffer LCD 显示 API
 ├── src/
-│   ├── v4l2_info.c        # 摄像头能力查询工具
+│   ├── v4l2_info.c        # 摄像头能力查询工具 (⚠ 未被 Makefile 编译, 见下)
 │   ├── v4l2_capture.c     # V4L2 MMAP 采集实现
 │   ├── tcp_socket.c       # TCP Socket 实现 (send_all/recv_all)
 │   ├── fb_display.c       # Framebuffer LCD 显示实现
 │   ├── imx6ull_sender.c   # 板端采集 + LCD显示 + TCP 发送
 │   └── pc_receiver.c      # PC 端接收 + 保存
+├── tools/
+│   ├── v4l2_info.c        # 摄像头能力查询工具 (实际编译的是这一份)
+│   └── v4l2_format_test.c # 格式协商测试 (TRY_FMT/S_FMT/G_FMT)
 ├── Makefile
 └── README.md
 ```
+
+> **关于 `v4l2_info` 的两份源码**: `src/v4l2_info.c` 与 `tools/v4l2_info.c`
+> 内容相近，但 **Makefile 只编译 `tools/` 下那一份**
+> （规则 `$(ARM_DIR)/v4l2_info_tool.o: $(TOOLSDIR)/v4l2_info.c`），
+> 产出 `bin/arm/v4l2_info`。`src/v4l2_info.c` 目前是历史遗留、不参与构建，
+> 修改它不会有任何效果。实际使用的能力查询工具输出以 `tools/` 版本为准
+> （额外解析 colorspace/field，信息更全）。
 
 ## 1. 项目功能
 
@@ -147,7 +157,9 @@ ls -l /dev/video*
 使用 `-l` 参数时，程序自动将采集画面同步显示到开发板 LCD：
 
 - 通过 `/dev/fb0` Linux framebuffer 接口，无需 Qt/OpenCV/SDL
-- 支持 RGB565 直接写入和 YUYV→RGB565 软转换
+- 支持 YUYV→XRGB8888 (BT.601 定点转换) 和 RGB565→XRGB8888 (解包+位扩展) 写入
+- 仅支持 32bpp framebuffer (XRGB8888), 其他位深初始化失败
+- 目标行步长使用 fix.line_length, 源行步长使用 V4L2 bytesperline (避免行尾 padding 错行)
 - 图像小于 LCD → 居中显示（四周留黑）
 - 图像大于 LCD → 居中裁剪（截取中间区域）
 - 不影响 TCP 发送，显示和网络传输并行进行
@@ -531,7 +543,7 @@ chmod 666 /dev/video1
 
 ### 9.3 VIDIOC_STREAMON failed
 
-**原因**: 通常是传感器没有正确上电或 MIPI/CSI 时钟没有配置好。
+**原因**: 通常是传感器没有正确上电或 CSI 时钟 (MCLK) 没有配置好。注意本项目 MCLK 引脚与闪光灯 LED 共用, 引脚被切到 GPIO 时摄像头无时钟。
 
 **排查**:
 ```bash
@@ -706,9 +718,9 @@ dmesg | grep -i "fb\|mxsfb"
 ## 11. 平台信息
 
 - **目标平台**: NXP i.MX6ULL (Cortex-A7)
-- **摄像头**: OV5640 (MIPI CSI / DVP)
+- **摄像头**: OV5640 (8-bit 并行 DVP 接口, i.MX6ULL 无 MIPI CSI 控制器)
 - **内核版本**: Linux 4.1.15
-- **V4L2 驱动**: mx6s_csi + ov5640_camera
+- **V4L2 驱动**: mx6s_capture (驱动名 mx6s-csi) + ov5640_camera
 - **设备节点**: /dev/video0 或 /dev/video1
 - **LCD 接口**: /dev/fb0 (Linux framebuffer)
 - **交叉编译器**: gcc-linaro-4.9.4-2017.01 (arm-linux-gnueabihf)
