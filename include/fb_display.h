@@ -41,6 +41,13 @@ struct fb_display {
     uint32_t transp_offset; /* var.transp.offset (32bpp 时用于补齐高位) */
     uint32_t transp_len;    /* var.transp.length */
     int      swap_rb;       /* RGB565 输入时是否交换 R/B (默认 0 = 不交换) */
+
+    /*
+     * 无缩放路径 (fit) 只 blit 图像区域, 不碰四周 —— 从缩放回到 1.0x
+     * 时四周会残留放大时的旧像素。置位表示该在下一次 fit 绘制前清屏;
+     * 缩放路径每帧写满整屏, 不涉及。
+     */
+    int      clear_before_fit;
 };
 
 /*

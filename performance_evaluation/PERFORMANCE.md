@@ -9,8 +9,65 @@
 > | **P 部分** | 性能报告：真实执行过的数据 + 待实测项 + 口径 | `§P2.1` 等 |
 > | **Z 部分** | 双指手势缩放的实施与验证 | `§Z3.3` 等 |
 >
-> ⚠️ **所有板端性能数字均为「待实测」**，本文件不含任何虚构数据。
+> ⚠️ ~~**所有板端性能数字均为「待实测」**，本文件不含任何虚构数据。~~
+> **2026-10-14 更新：板端实测已完成**，结果见下节「板端实测结果」。下文 B/P 部分的
+> 流程与口径说明仍然有效（引用数字时以实测结果章节为准）。
 > 使用流程见 `USAGE.md`；改动原因见 `AUDIT_AND_CHANGES.md`。
+
+---
+
+## 板端实测结果（2026-10-14, 数据源 `logs/camera_sender/` 与 `results/pc_bench|pc_zoom`）
+
+**环境**: i.MX6ULL (armv7l, Linux 4.1.15) + OV5640, 实际协商 YUYV 640×480, bytesperline=1280,
+sizeimage=614400, 3 缓冲, `G_PARM` 读回 1/30（TIMEPERFRAME 支持）；LCD 1024×600 32bpp；
+100Mbps 有线链路（PC 192.168.1.66）。
+
+### 1. 采集与图传（30 fps 条件, 驱动 timeperframe=1/30）
+
+| 用例 | fps | 间隔 P99 | send P99 | 吞吐 | CPU(单核) | RSS | seq_gap |
+|---|---|---|---|---|---|---|---|
+| capture-only | **30.020** | 33.39 ms | — | — | 0.5% | 1.1 MB | 0/0 |
+| capture+tcp | **17.019** | 92.12 ms | 91.84 ms | **83.65 Mbps** | 52.1% | 1.1 MB | 723/760 |
+
+两轮独立运行可复现（17.02/17.56 fps, 83.7/86.3 Mbps）。**瓶颈定位**：单线程串行 `send()`
+P99 91.8 ms > 33.3 ms 帧周期 → 采集侧来不及取帧（`sequence` 跳变是采集侧语义, 非网络丢包——
+PC 侧接收帧数与板端 `frames_sent` 完全一致, `bad_*`/`frame_id_gap` 全 0）。
+
+### 2. 15 fps 条件（S_PARM 下发后的旁证组）
+
+| 用例 | fps | 吞吐 | seq_gap | 说明 |
+|---|---|---|---|---|
+| capture-only | 15.014 | — | 0/0 | 帧周期 66.7 ms > send P99 |
+| capture+tcp | 15.003 | 73.75 Mbps | **0/0** | 网络路径零影响, 帧率=上限 |
+| buffers=6 对照 | 14.998 | 73.72 Mbps | 0/0 | 缓冲 3→6 无差异, 排除缓冲不足 |
+| longrun 300s | 15.007 | 73.77 Mbps | 0/0 | RSS 1044→1292 KB（+248 KB, 未见失控）|
+
+`--set-fps 15` 被 `S_PARM` 接受且 `G_PARM` 读回 1/15 —— **帧率协商功能有板端证据**。
+（注意 `S_PARM` 有残留效应, 会影响后续所有用例, 复测需先恢复。）
+
+### 3. 显示与缩放渲染（30 fps 条件, `--zoom-fixed`, 渲染耗时=写显存全流程）
+
+| 倍率 | render mean | render p99 | display_fps | 相对 fit | 渲染路径 |
+|---|---|---|---|---|---|
+| 无缩放 (fit) | 229.3 ms | 230.8 ms | 3.84 | 基线 | fit=231 |
+| 1.0× | —（该档数据未采到, 见 AUDIT §B5.1） | — | — | — | — |
+| 1.5× | 194.3 ms | 194.8 ms | 4.42 | −15% | zoomed=266 |
+| 2.0× | 148.6 ms | 148.9 ms | 5.56 | **−35%** | zoomed=334 |
+
+- **放大越多渲染越快**: 行解码缓存生效（可见源行变少）, 与离线测出的"解码量降约 37%"一致。
+- **加 LCD 是最大瓶颈**: 15.0 → 3.8 fps（−74%）, CPU 45%→98%。网络影响（−13 fps）远小于显示影响。
+- `render_*` 在 fit 与 zoomed 两条路径下都计入（`render(zoom)` 直方图）。
+
+### 4. PC 侧交叉核对（全部通过）
+
+| 用例 | PC 收帧 | 板端发帧 | `bad_*` | frame_id_gap | recv 次数/帧 |
+|---|---|---|---|---|---|
+| capture+tcp | 901 | 901 | 全 0 | 0/0 | 425 |
+| longrun | 4503 | 4503 | 全 0 | 0/0 | 425 |
+| display / zoom 各档 | 231/232/267/336 | 一致 | 全 0 | 0/0 | 423 |
+
+**不可用数据**: 带 LCD 用例的 CPU 109.9%/111.1%（超单核 100%, 采样口径异常）；
+`--zoom-fixed 1.0` 档（渲染路径 bug 已修, 数据未重采）。详见 `AUDIT_AND_CHANGES.md` §B5.1。
 
 ---
 
@@ -110,15 +167,15 @@ cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp
 
 ```bash
 # 板端
-sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench
+sh board_benchmark.sh /dev/video1 <PC_IP> 60  # -> logs/camera_sender/bench/
 ```
 
 或手工逐条执行:
 
 | 模式 | 板端命令 | PC 端 |
 |---|---|---|
-| **capture-only** | `./imx6ull_sender -d /dev/video1 --capture-only --duration 60 --warmup 30 --quiet --stats-dir ./bench/capture_only` | 不需要 |
-| **capture+tcp** | `./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir ./bench/capture_tcp` | B3 单链路 |
+| **capture-only** | `./imx6ull_sender -d /dev/video1 --capture-only --duration 60 --warmup 30 --quiet --stats-dir logs/camera_sender/bench/capture_only` | 不需要 |
+| **capture+tcp** | `./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir logs/camera_sender/bench/capture_tcp` | B3 单链路 |
 | **capture+tcp+display** | 同上再加 `-l` | B3 + `-d` |
 
 **参数选择理由**:
@@ -143,9 +200,9 @@ sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench
 
 ```bash
 # 基线
-./imx6ull_sender -d /dev/video1 -s <PC_IP> --buffers 3 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir ./bench/buf3
+./imx6ull_sender -d /dev/video1 -s <PC_IP> --buffers 3 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir logs/camera_sender/bench/buf3
 # 变量: 只改缓冲数
-./imx6ull_sender -d /dev/video1 -s <PC_IP> --buffers 6 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir ./bench/buf6
+./imx6ull_sender -d /dev/video1 -s <PC_IP> --buffers 6 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir logs/camera_sender/bench/buf6
 ```
 
 **判读**: 比较两组的 `seq_gap_events` / `poll_timeout` / `fps_overall`。
@@ -156,7 +213,7 @@ sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench
 #### 实验 2: 帧率能否协商？（决定"帧率"这句话怎么写）
 
 ```bash
-./imx6ull_sender -d /dev/video1 -s <PC_IP> --set-fps 15 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir ./bench/fps15
+./imx6ull_sender -d /dev/video1 -s <PC_IP> --set-fps 15 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir logs/camera_sender/bench/fps15
 ```
 
 **必须记录**: 启动日志里的 `S_PARM accepted` / `not accepted`、`timeperframe = ?/? (?.?? fps)`、`TIMEPERFRAME supported/NOT supported`。
@@ -186,7 +243,7 @@ sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench
 
 ```bash
 ./imx6ull_sender -d /dev/video1 -s <PC_IP> --duration 1800 --warmup 60 \
-    --quiet --io-timeout 5 --stats-dir ./bench/longrun      # 30 分钟
+    --quiet --io-timeout 5 --stats-dir logs/camera_sender/bench/longrun      # 30 分钟
 ```
 
 **检查项**:
@@ -457,7 +514,7 @@ PASS  no leftover test processes
 
 ```bash
 # 板端 (部署后)
-sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench
+sh board_benchmark.sh /dev/video1 <PC_IP> 60  # -> logs/camera_sender/bench/
 
 # PC 端 (板端跑之前先起)
 ./bin/pc/pc_receiver -p 5000 --no-save --quiet -n <预计帧数> \
@@ -865,7 +922,7 @@ cat /proc/bus/input/devices | grep -A3 -i gt911
     --stats-dir performance_evaluation/results/pc_zoom
 
 # 板端
-sh board_zoom_bench.sh /dev/video1 <PC_IP> 60 ./bench
+sh board_zoom_bench.sh /dev/video1 <PC_IP> 60  # -> logs/camera_sender/zoom/
 ```
 
 矩阵（每档只改倍率，其余参数完全一致）：

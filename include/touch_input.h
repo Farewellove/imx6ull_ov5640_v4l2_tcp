@@ -37,6 +37,14 @@
 /* 最多跟踪的 slot 数 (GT911 驱动只申请了 5 个, 留一倍余量) */
 #define TOUCH_MAX_SLOTS 10
 
+/*
+ * 幽灵触点过滤阈值 (X/Y 事件各计一次, GT911 ~10ms/帧 → 30 ≈ 150ms)。
+ * 实测: 双指捏合时 GT911 会持续多报一个位置纹丝不动的第三触点
+ * (46 帧里 27 帧为多指), 使 n>=3, 双指缩放永远无法触发。
+ * 连续静止超过该阈值的触点从帧里剔除; 一恢复移动立即重新计入。
+ */
+#define TOUCH_GHOST_STILL_FRAMES 30
+
 /* 一帧触摸数据 (一次 SYN_REPORT 的结果) */
 struct touch_frame {
     int      n;                     /* 有效触点数 (0 = 所有手指已抬起) */
@@ -45,6 +53,15 @@ struct touch_frame {
     int      id[TOUCH_MAX_SLOTS];   /* ABS_MT_TRACKING_ID */
     uint64_t t_us;                  /* 逻辑时间 (单调微秒) */
     int      syn_dropped;           /* 1 = 本帧由 SYN_DROPPED 触发, 状态已清空 */
+
+    /*
+     * 静止过滤前的原始触点数, 以及"生涯内发生过位移"的触点数。
+     * 三指复位必须用这两个值判定, 不能用过滤后的 n: 三指按住不动时
+     * 第三指会被静止过滤剔除 (n 变成 2), 复位永远触发不了。而幽灵
+     * 触点从出现到消失坐标从不变化 (moved=0), 用 n_moved 即可区分。
+     */
+    int      n_raw;                 /* 过滤前的有效触点数 (含静止幽灵) */
+    int      n_moved;               /* 生涯内移动过的触点数 */
 };
 
 struct touch_ctx {
@@ -57,9 +74,11 @@ struct touch_ctx {
     /* MT Protocol B 状态机 */
     int      cur_slot;
     struct touch_slot_raw {
-        int     id;      /* -1 = 未使用 */
-        int32_t rx, ry;  /* 原始坐标 (未映射) */
-        int     seen;    /* 本帧内是否收到过坐标 */
+        int     id;        /* -1 = 未使用 */
+        int32_t rx, ry;    /* 原始坐标 (未映射) */
+        int     seen;      /* 生涯内是否收到过坐标 (新触点首个坐标不计静止) */
+        int     still_run; /* 连续静止事件计数 (X/Y 各计一次), 幽灵过滤用 */
+        int     moved;     /* 生涯内坐标是否变化过 (区分真实手指与幽灵) */
     } slot[TOUCH_MAX_SLOTS];
 
     /* 坐标范围与映射 */
@@ -108,8 +127,9 @@ void touch_set_orientation(struct touch_ctx *t, int swap_xy,
  *        0 = 目前没有新帧 (真实设备无事件 / 回放已到文件尾)
  *       -1 = 读取错误
  *
- * 注意: 真实设备上一次调用会尽量排空内核事件队列, 但**只返回最后一帧**,
- * 避免落后的事件把显示层拖住 (触摸只是控制信号, 不需要逐帧回放)。
+ * 注意: 真实设备与回放模式一致, 每凑齐一个 SYN_REPORT 就返回一帧 ——
+ * 手势层的"连续 N 帧确认 / 比例阈值"依赖逐帧时序; 积压由调用方的
+ * guard 上限兜住 (触摸只是控制信号, 落后就丢)。
  */
 int touch_read_frame(struct touch_ctx *t, struct touch_frame *out);
 

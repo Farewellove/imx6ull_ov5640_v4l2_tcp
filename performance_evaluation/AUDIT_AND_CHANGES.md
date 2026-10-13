@@ -794,9 +794,47 @@ width, height, pixfmt, lcd, lcd_swap_rb
 | PC 本地编译 | `make pc` | **PASS**, exit 0, **0 warning** | `logs/build_pc.log` |
 | 改动前基线 | `make allboth` | PASS, exit 0, 0 warning | `logs/build_baseline.log` |
 | 改动后整体 | `make allboth` | PASS, exit 0, 0 warning | `logs/build_after.log` |
+| 板端修复后（触摸/缩放/渲染路径, 2026-10-14） | `make arm` × 多轮 | **PASS**, exit 0, **0 warning**（每轮修改后均重编并装机实测） | 终端输出（未留档） |
 
 工具链: `arm-linux-gnueabihf-gcc 4.9.4 (Linaro)`；`gcc 11.4.0`；`SDL2 2.0.20`。
 编译选项: `-Wall -Wextra -O2 -g -std=gnu99`（保持原样, 未放宽告警）。
+
+## B5.1 上板实测后的触摸/缩放修复（2026-10-13, i.MX6ULL + GT911 1024x600）
+
+上板才暴露的三个缺陷（**离线回放测不出来**, 因为回放模式与真实设备的读取语义不同）:
+
+| # | 缺陷 | 根因 | 修复 | 位置 |
+|---|---|---|---|---|
+| 1 | 双指缩放完全无反应（统计里 `0指` 占绝大多数） | `touch_read_frame()` 真实设备走"排空式只返回最后一帧"。触摸 ~10ms/帧而主循环 33ms 才读一次, 每次拿到的大多是抬手后的空帧 | 真实设备与回放统一为**逐帧返回**（积压由调用方 `guard=64` 兜住） | `src/touch_input.c` |
+| 2 | 捏合时 `n>=3`, 永远进不了双指分支 | GT911 双指捏合时持续多报一个**坐标纹丝不动**的幽灵触点（754 帧样本里原始多指 27 帧） | 连续静止 ≈150ms 的触点从帧里剔除（`TOUCH_GHOST_STILL_FRAMES`）；触点一恢复移动立即重新计入 | `src/touch_input.c`, `include/touch_input.h` |
+| 3 | 三指复位始终 `resets=0` | 三指按住不动 → 第三指被上面的静止过滤剔除 → `n=2`；且"帧数"不等于时长（积压帧时间戳几乎相同） | 三指判定改用**过滤前的** `n_raw` + `n_moved`（幽灵 `moved=0`，真实手指落下必有位移）+ 基于帧时间戳的 120ms 持续判定 | `src/gesture_zoom.c`, `include/gesture_zoom.h` |
+
+另外补的两个:
+
+- **缩放回 1.0× 后四周残留旧像素**: `zoom` 路径每帧写满整屏，`fit` 路径只 blit 图像区域 → 从缩放切回 fit（及首帧）时整屏清一次（`fb_display.c: clear_before_fit`）。不做每帧全屏 `memset`（2.34 MiB/帧, 嵌入式不划算）, 也不做脏矩形（切换时才清, 已足够）。
+- **`--touch-debug`**: 打印前 300 帧的 `n / n_raw / n_moved / drop` 与坐标, 是这次定位的决定性手段, 默认关闭。
+
+**保留的行为（不是 bug）**: 1.0× 下拖动无视觉变化 —— 图像 640×480 小于屏幕 1024×600，`fb_view_clamp()` 强制居中锁定；水平方向需 `zoom > 1.6`、垂直需 `zoom > 1.25` 才可平移。
+
+**未做**: 不审计/修改 GT911 驱动（项目约束为只读）。幽灵触点在用户态用 `moved` 特征区分, 若将来实测发现幽灵也会"移动"再回到驱动层排查。
+
+后续（2026-10-14）又修的两个（同属本轮上板修复）:
+
+| # | 缺陷 | 根因 | 修复 | 位置 |
+|---|---|---|---|---|
+| 4 | `--zoom-fixed 1.0` 档退化走 fit 路径（`zoomed=0`）, 与注释宣称的"强制走缩放路径"不符 | 渲染分支条件 `force_zoomed && !zoom_state_is_fit()` 被"1.0x 恰好等于 fit 视图"退化掉 | `zoom_fixed > 0.0` 时**无条件**走缩放路径; 触摸模式仍按视图判断 | `src/imx6ull_sender.c` |
+| 5 | `summary.csv` 的 `zoom_final` 在 `--zoom-fixed` 档恒为 0.000 | 统计快照包在 `if (touch_ok)` 里, 而 `--zoom-fixed` 不读触摸 | `zoom_final`/手势计数改为**无条件快照**; 手势统计打印保留条件 | `src/imx6ull_sender.c` |
+
+测试编排问题（非代码 bug, 同步记录）: `pc_receiver` 一次只 accept 一个客户端,
+`board_benchmark.sh` 的 5 个网络用例只有第一个连得上 → 新增 `scripts/pc_bench_serve.sh`
+（PC 端按用例逐个起接收端, 每用例独立 stats 目录）; `board_zoom_bench.sh` 曾用 GNU
+`timeout -k`, BusyBox 不支持（`invalid option -- 'k'` 导致用例空跑）→ 已去掉（程序自带
+`--duration` 护栏）。
+
+**遗留**: `zoom_1.0` 档在新二进制下短跑即退出（1 帧 0.23s, summary 字段自相矛盾——
+`frames_sent=1` 但 `payload_bytes=0`, 疑似 NFS 上 CSV 写入被中断后残缺）, 原因未定位;
+该档非关键（fit 基线 `zoom_off` 已覆盖同一测量点）。带 LCD 用例的 CPU 采样 109.9%/111.1%
+（超单核 100%）为统计口径异常, 数据不可用。
 
 ## B6. 未做的改动及原因
 

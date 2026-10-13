@@ -128,7 +128,8 @@ enum {
 	OPT_ZOOM_FIXED,
 	OPT_TOUCH_SWAP_XY,
 	OPT_TOUCH_INVERT_X,
-	OPT_TOUCH_INVERT_Y
+	OPT_TOUCH_INVERT_Y,
+	OPT_TOUCH_DEBUG
 };
 
 static void usage(const char *prog)
@@ -167,6 +168,10 @@ static void usage(const char *prog)
 		"  --zoom-fixed <f>  Force a fixed zoom, no touch needed (for the\n"
 		"                    1.0x/1.5x/2.0x benchmark matrix)\n"
 		"  --touch-swap-xy   Swap touch X/Y (panel mounting orientation)\n"
+		"  --touch-debug     Print every raw touch frame (finger count and\n"
+		"                    coordinates) for the first 300 frames. Use this\n"
+		"                    to verify the panel really reports 2 fingers\n"
+		"                    before blaming the gesture logic.\n"
 		"  --touch-invert-x / --touch-invert-y\n"
 		"                    Invert a touch axis if the mapping is mirrored\n"
 		"\n"
@@ -722,6 +727,8 @@ int main(int argc, char *argv[])
 	double   zoom_max       = 2.0;
 	double   zoom_fixed     = 0.0;    /* --zoom-fixed: >0 时固定倍率且不读触摸 */
 	int      touch_swap_xy  = 0, touch_inv_x = 0, touch_inv_y = 0;
+	int      touch_debug    = 0;   /* --touch-debug: 打印原始触摸帧 */
+	int      touch_dbg_frames = 0; /* 已打印的调试帧数 (上限 300) */
 	struct touch_ctx tctx;
 	struct zoom_state zstate;
 	int      touch_ok       = 0;
@@ -757,6 +764,7 @@ int main(int argc, char *argv[])
 		{"touch-swap-xy",  no_argument,       NULL, OPT_TOUCH_SWAP_XY},
 		{"touch-invert-x", no_argument,       NULL, OPT_TOUCH_INVERT_X},
 		{"touch-invert-y", no_argument,       NULL, OPT_TOUCH_INVERT_Y},
+		{"touch-debug",   no_argument,       NULL, OPT_TOUCH_DEBUG},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -866,6 +874,7 @@ int main(int argc, char *argv[])
 		case OPT_TOUCH_SWAP_XY:  touch_swap_xy = 1; break;
 		case OPT_TOUCH_INVERT_X: touch_inv_x   = 1; break;
 		case OPT_TOUCH_INVERT_Y: touch_inv_y   = 1; break;
+		case OPT_TOUCH_DEBUG:   touch_debug   = 1; break;
 		default:
 			usage(argv[0]);
 			return 1;
@@ -1236,6 +1245,23 @@ int main(int argc, char *argv[])
 
 				while (touch_read_frame(&tctx, &tf) == 1) {
 					zoom_state_update(&zstate, &tf);
+
+					/* --touch-debug: 触摸是控制信号, 打印只用于定位
+					 * "面板到底报了几个触点", 上限 300 帧避免刷屏 */
+					if (touch_debug && touch_dbg_frames < 300) {
+						int k;
+
+						touch_dbg_frames++;
+						printf("[TF#%d] n=%d raw=%d moved=%d drop=%d",
+						       touch_dbg_frames, tf.n,
+						       tf.n_raw, tf.n_moved,
+						       tf.syn_dropped);
+						for (k = 0; k < tf.n && k < 5; k++)
+							printf(" (%d,%d)",
+							       tf.x[k], tf.y[k]);
+						printf("\n");
+					}
+
 					if (++guard >= 64)
 						break;
 				}
@@ -1250,13 +1276,21 @@ int main(int argc, char *argv[])
 			 *     blit, 输出与改造前逐像素一致
 			 *   - 视图被手势改变 (或 --zoom-fixed) → 最近邻缩放渲染
 			 *
+			 * --zoom-fixed 必须无条件走缩放路径: 它的用途是给 1.0x 档
+			 * 也测到缩放渲染代码本身。原来写的 `force_zoomed &&
+			 * !zoom_state_is_fit()` 会被 1.0x 恰好等于 fit 视图这一点
+			 * 退化掉 (实测 zoom_1.0 档 zoomed=0, 全部走了 fit), 与上面
+			 * 注释宣称的行为不符。
+			 * 触摸模式下仍然按视图判断: 1.0x 居中视图走 fit 省性能。
+			 *
 			 * 缩放只发生在写显存这一步: 采集分辨率不变, 采集缓冲区
 			 * (fr.data) 全程只读, 不向其写入任何数据。
 			 */
 			if (enable_lcd) {
 				uint64_t t_r0 = metrics_now_ns();
 
-				if (force_zoomed && !zoom_state_is_fit(&zstate)) {
+				if (zoom_fixed > 0.0 ||
+				    (touch_ok && !zoom_state_is_fit(&zstate))) {
 					fb_display_show_frame_zoomed(&fb, fr.data,
 					                             ctx.width, ctx.height,
 					                             ctx.bytesperline,
@@ -1391,16 +1425,19 @@ int main(int argc, char *argv[])
 	 * 把缩放/手势的最终状态快照进统计里, 再让 bench_finish 输出 ——
 	 * 否则 summary.csv 里的 zoom_final / pinch_* 全是 0, 数据无法自证
 	 * "这份 CSV 是在什么倍率、发生了什么手势的情况下跑出来的"。
+	 *
+	 * 必须无条件快照: --zoom-fixed 基准矩阵下 touch_ok == 0 (不读触摸),
+	 * 但视图状态依然有效; 只在 touch_ok 时赋值会让这一列在基准矩阵里
+	 * 永远是 0.000, 看不出这一档到底跑的是几倍。
 	 */
-	if (touch_ok) {
-		g_bench.zoom_final        = zstate.view.zoom;
-		g_bench.pinch_out         = zstate.pinch_out;
-		g_bench.pinch_in          = zstate.pinch_in;
-		g_bench.pan_frames        = zstate.pan_frames;
-		g_bench.zoom_resets       = zstate.resets;
-		g_bench.touch_syn_dropped = tctx.syn_dropped_cnt;
+	g_bench.zoom_final        = zstate.view.zoom;
+	g_bench.pinch_out         = zstate.pinch_out;
+	g_bench.pinch_in          = zstate.pinch_in;
+	g_bench.pan_frames        = zstate.pan_frames;
+	g_bench.zoom_resets       = zstate.resets;
+	g_bench.touch_syn_dropped = tctx.syn_dropped_cnt;
+	if (touch_ok || zoom_fixed > 0.0)
 		zoom_state_print_stats(&zstate);
-	}
 
 	/* 5. 清理: 顺序与初始化相反 (touch → socket → LCD → V4L2) */
 	bench_finish(&g_bench, metrics_now_ns());

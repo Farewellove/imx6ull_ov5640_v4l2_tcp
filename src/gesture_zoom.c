@@ -115,22 +115,42 @@ int zoom_state_update(struct zoom_state *z, const struct touch_frame *tf)
         return 0;
     }
 
-    /* ---- 三指: 复位到 1.0x 居中 (一次按压只执行一次) ---- */
-    if (tf->n >= ZOOM_RESET_FINGERS) {
+    /* ---- 三指: 复位到 1.0x 居中 (持续时长确认, 一次按压只执行一次) ----
+     *
+     * 用 n_raw (静止过滤前) 判定: 三指按住不动时第三指会被静止过滤
+     * 剔除, 过滤后的 n 只有 2, 复位永远触发不了。
+     * 同时要求 n_moved >= 3: 幽灵触点坐标从不变 (moved=0), 这样捏合
+     * 时混入的第三幽灵点不会误触发复位, 而真实手指落下必有位移。
+     */
+    if (tf->n_raw >= ZOOM_RESET_FINGERS) {
         z->frames_multi++;
-        if (!z->reset_latched) {
-            z->reset_latched = 1;
-            zoom_state_reset_view(z);
-            z->resets++;
-            changed = 1;
-            z->view_changed_frames++;
+
+        if (tf->n_moved >= ZOOM_RESET_FINGERS) {
+            if (z->multi_start_us == 0)
+                z->multi_start_us = tf->t_us;
+
+            if (!z->reset_latched &&
+                (tf->t_us - z->multi_start_us) >= ZOOM_RESET_HOLD_US) {
+                z->reset_latched = 1;
+                zoom_state_reset_view(z);
+                z->resets++;
+                changed = 1;
+                z->view_changed_frames++;
+                zoom_session_abort(z);  /* 复位后重建基准 */
+            }
         }
-        /* 复位后重新建立基准, 避免接着的手指位移被当成巨大平移 */
-        zoom_session_abort(z);
+
+        /* 未确认复位的多指帧不终止双指会话, 双指中心用本帧前两个触点
+         * 近似更新, 保持平移的连续性 (基准距离不动) */
+        if (z->have_prev && tf->n >= 2) {
+            z->prev_cx = ((double)tf->x[0] + (double)tf->x[1]) / 2.0;
+            z->prev_cy = ((double)tf->y[0] + (double)tf->y[1]) / 2.0;
+        }
         zoom_record_time(z, t0);
         return changed;
     }
     z->reset_latched = 0;
+    z->multi_start_us = 0;
 
     /* ---- 非双指: 结束双指会话 (视图保持不变) ---- */
     if (tf->n != 2) {

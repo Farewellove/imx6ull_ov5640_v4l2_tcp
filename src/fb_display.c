@@ -44,6 +44,8 @@ int fb_display_init(struct fb_display *fb, const char *dev)
 
     memset(fb, 0, sizeof(*fb));
     fb->fd = -1;
+    /* 首帧先清屏: 清掉控制台/上一轮程序留下的内容 */
+    fb->clear_before_fit = 1;
 
     if (dev == NULL)
         dev = "/dev/fb0";
@@ -386,6 +388,17 @@ int fb_display_show_frame(struct fb_display *fb, const void *data,
     scr_w = fb->screen_width;
     scr_h = fb->screen_height;
 
+    /*
+     * 无缩放路径只写图像区域, 四周不动 —— 缩放回到 1.0x 时四周会残留
+     * 放大时的旧像素 (缩放路径是写满整屏的)。因此从缩放路径切回来
+     * (以及首帧) 先整屏清一次; 之后视图不再变化就不再清, 避免每帧
+     * 全屏 memset 的开销。
+     */
+    if (fb->clear_before_fit) {
+        memset(fb->fb_mmap, 0x00, fb->fb_size);
+        fb->clear_before_fit = 0;
+    }
+
     /* 行步长兜底: 调用者没传 bytesperline 时按紧凑行宽 */
     if (src_stride == 0)
         src_stride = width * 2;
@@ -545,6 +558,9 @@ int fb_display_show_frame_zoomed(struct fb_display *fb, const void *data,
     lcd_h = fb->screen_height;
     if (lcd_w == 0 || lcd_h == 0)
         return -1;
+
+    /* 缩放路径会写满整屏, 之后若回到 fit 路径需要先清屏 */
+    fb->clear_before_fit = 1;
 
     map_x    = (uint32_t *)malloc(sizeof(uint32_t) * lcd_w);
     rowcache = (uint32_t *)malloc(sizeof(uint32_t) * ((size_t)width + 1));

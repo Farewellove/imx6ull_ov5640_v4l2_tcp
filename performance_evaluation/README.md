@@ -131,8 +131,8 @@ make install      # 安装板端程序到 NFS
     --stats-dir performance_evaluation/results/pc_capture_tcp
 
 # 终端B (板端)
-sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench          # 基础矩阵
-sh board_zoom_bench.sh /dev/video1 <PC_IP> 60 ./bench_zoom    # 缩放 1.0/1.5/2.0×
+sh board_benchmark.sh /dev/video1 <PC_IP> 60          # 基础矩阵 -> logs/camera_sender/bench/
+sh board_zoom_bench.sh /dev/video1 <PC_IP> 60         # 缩放 1.0/1.5/2.0× -> logs/camera_sender/zoom/
 
 # 分析
 python3 performance_evaluation/scripts/analyze_stats.py --compare <board_dir> <pc_dir>

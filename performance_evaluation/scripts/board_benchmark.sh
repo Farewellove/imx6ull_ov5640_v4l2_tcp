@@ -7,19 +7,21 @@
 #
 # 用法 (板端):
 #     cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15
-#     sh board_benchmark.sh /dev/video1 192.168.1.66 60 ./bench
+#     sh board_benchmark.sh /dev/video1 192.168.1.66 60
 #
 # 参数:
 #     $1 视频设备节点        (默认 /dev/video1)
 #     $2 PC 服务器 IP        (默认 192.168.1.66)
 #     $3 每用例时长秒数      (默认 60)
-#     $4 输出目录            (默认 ./bench)
+#     $4 输出目录            (默认 /lib/modules/4.1.15/logs/camera_sender/bench)
+#
+# 所有日志/CSV 统一落在 /lib/modules/4.1.15/logs/<项目名>/ 下, 不再散在 4.1.15 根目录。
 #
 
 DEV="${1:-/dev/video1}"
 PCIP="${2:-192.168.1.66}"
 DUR="${3:-60}"
-OUT="${4:-./bench}"
+OUT="${4:-/lib/modules/4.1.15/logs/camera_sender/bench}"
 PORT=5000
 
 BIN="$(dirname "$0")/imx6ull_sender"

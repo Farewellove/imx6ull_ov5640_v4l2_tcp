@@ -793,12 +793,12 @@ dmesg | grep -i "fb\|mxsfb"
 ```bash
 # 纯采集基准（60s，排除前 30 帧预热）
 ./imx6ull_sender -d /dev/video1 --capture-only \
-    --duration 60 --warmup 30 --quiet --stats-dir ./bench/capture_only
+    --duration 60 --warmup 30 --quiet --stats-dir logs/camera_sender/bench/capture_only
 
 # 采集 + 发送基准
 ./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 \
     --duration 60 --warmup 30 --quiet --io-timeout 5 \
-    --stats-dir ./bench/capture_tcp
+    --stats-dir logs/camera_sender/bench/capture_tcp
 ```
 
 ### 12.2 PC 端 (`pc_receiver`)
@@ -825,7 +825,7 @@ dmesg | grep -i "fb\|mxsfb"
 
 ```bash
 # 板端一键跑完全部用例（含采集基准/图传/显示/长时/对照实验）
-sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench
+sh board_benchmark.sh /dev/video1 <PC_IP> 60  # -> 板端 logs/camera_sender/bench/
 
 # 结果分析（--compare 可做板端与 PC 端两侧对照）
 python3 performance_evaluation/scripts/analyze_stats.py --compare <board_dir> <pc_dir>

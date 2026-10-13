@@ -50,6 +50,8 @@ static void touch_reset_state(struct touch_ctx *t)
         t->slot[i].rx = 0;
         t->slot[i].ry = 0;
         t->slot[i].seen = 0;
+        t->slot[i].still_run = 0;
+        t->slot[i].moved = 0;
     }
     t->cur_slot = 0;
 }
@@ -196,18 +198,38 @@ static uint64_t touch_event_time_us(const struct touch_ctx *t,
 static void touch_emit_frame(struct touch_ctx *t, struct touch_frame *out,
                              uint64_t t_us, int dropped)
 {
-    int i, n = 0;
+    int i, n = 0, n_raw = 0, n_moved = 0;
 
     memset(out, 0, sizeof(*out));
     out->t_us = t_us;
     out->syn_dropped = dropped;
 
     if (!dropped) {
+        /* 先统计过滤前的原始状态: 三指复位要用它判定 */
+        for (i = 0; i < TOUCH_MAX_SLOTS; i++) {
+            if (t->slot[i].id < 0)
+                continue;
+            n_raw++;
+            if (t->slot[i].moved)
+                n_moved++;
+        }
+
         for (i = 0; i < TOUCH_MAX_SLOTS; i++) {
             int32_t lx, ly;
 
             if (t->slot[i].id < 0)
                 continue;
+
+            /*
+             * 幽灵触点过滤: GT911 双指捏合时会持续多报一个位置纹丝不
+             * 动的第三触点 (实测 46 帧里 27 帧为多指), n 被顶到 3 后
+             * 双指缩放永远无法触发。连续静止超过 TOUCH_GHOST_STILL_
+             * FRAMES 的触点不计入本帧 —— 真实手指捏合时位置一直在变,
+             * 不受影响; 触点一恢复移动立即重新计入。
+             */
+            if (t->slot[i].still_run >= TOUCH_GHOST_STILL_FRAMES)
+                continue;
+
             if (n >= TOUCH_MAX_SLOTS) {
                 t->frames_overflow++;
                 break;
@@ -228,7 +250,9 @@ static void touch_emit_frame(struct touch_ctx *t, struct touch_frame *out,
         }
     }
 
-    out->n = n;
+    out->n       = n;
+    out->n_raw   = n_raw;
+    out->n_moved = n_moved;
     t->frames++;
 }
 
@@ -273,23 +297,40 @@ static int touch_apply_event(struct touch_ctx *t, const struct input_event *ev,
         return 0;
 
     case ABS_MT_TRACKING_ID:
-        t->slot[t->cur_slot].id = ev->value;   /* -1 = 抬起 */
         if (ev->value < 0) {
+            t->slot[t->cur_slot].id = -1;      /* 抬起 */
             t->slot[t->cur_slot].seen = 0;
         } else {
-            t->slot[t->cur_slot].seen = 0;     /* 等坐标 */
+            /* 新触点生涯开始: 首个坐标事件不计静止; rx/ry 无效化,
+             * 防止触点恰在 (0,0) 时被误判为静止 */
+            t->slot[t->cur_slot].id = ev->value;
+            t->slot[t->cur_slot].seen = 0;
+            t->slot[t->cur_slot].still_run = 0;
+            t->slot[t->cur_slot].moved = 0;
+            t->slot[t->cur_slot].rx = -1;
+            t->slot[t->cur_slot].ry = -1;
         }
         return 0;
 
     case ABS_MT_POSITION_X:
-        t->slot[t->cur_slot].rx = ev->value;
-        t->slot[t->cur_slot].seen = 1;
-        return 0;
-
     case ABS_MT_POSITION_Y:
-        t->slot[t->cur_slot].ry = ev->value;
+    {
+        int32_t *dst = (ev->code == ABS_MT_POSITION_X)
+                       ? &t->slot[t->cur_slot].rx
+                       : &t->slot[t->cur_slot].ry;
+
+        if (t->slot[t->cur_slot].seen == 0) {
+            *dst = ev->value;                  /* 生涯首个坐标, 不判静止 */
+        } else if (*dst == ev->value) {
+            t->slot[t->cur_slot].still_run++;  /* 位置未变 */
+        } else {
+            *dst = ev->value;
+            t->slot[t->cur_slot].still_run = 0;
+            t->slot[t->cur_slot].moved = 1;    /* 真实手指必然有过位移 */
+        }
         t->slot[t->cur_slot].seen = 1;
         return 0;
+    }
 
     default:
         /* ABS_MT_TOUCH_MAJOR / ABS_X / ABS_Y(单点兼容) 等: 本模块用不到 */
@@ -423,7 +464,7 @@ int touch_open_replay(struct touch_ctx *t, const char *path,
 int touch_read_frame(struct touch_ctx *t, struct touch_frame *out)
 {
     struct input_event ev;
-    int ret, last_frame_valid = 0;
+    int ret;
     struct touch_frame last;
 
     if (t == NULL || out == NULL)
@@ -436,35 +477,28 @@ int touch_read_frame(struct touch_ctx *t, struct touch_frame *out)
         if (ret < 0)
             return -1;
 
-        if (ret == 0) {
-            /*
-             * 事件源暂时/永久空了。
-             *
-             * 两种模式必须区别对待 —— 这一点曾经写错并导致回放只处理
-             * 了 1 帧 (整份日志被一次 read 吞掉, 手势时序全丢):
-             *   - 真实设备: 触摸只是控制信号, 落后的事件不需要逐帧补,
-             *     所以返回本批的**最后一帧** (排空式)
-             *   - 回放: 每一帧都必须交给手势层, 否则"连续 2 帧确认"、
-             *     冷却、比例阈值这些时序逻辑根本无从生效
-             */
-            if (last_frame_valid && !t->replay_mode) {
-                *out = last;
-                return 1;
-            }
-            return 0;
-        }
+        if (ret == 0)
+            return 0;   /* 事件源暂时/永久空了 */
 
         ret = touch_apply_event(t, &ev, &last);
         if (ret < 0)
             return -1;
 
+        /*
+         * 每凑齐一个 SYN_REPORT 就交给手势层 —— 真实设备与回放模式
+         * 必须一致。
+         *
+         * 这里曾经只对回放逐帧返回, 真实设备走"排空式只留最后一帧",
+         * 后果是: 触摸 ~10ms 一帧而主循环 33ms 才读一次, 每次拿到的大
+         * 多是抬手后的空帧 (实测统计: 0指10 / 1指7 / 2指1), 捏合手势的
+         * "连续 N 帧确认 / 比例阈值" 无从生效 —— 表现就是双指缩放没反应。
+         *
+         * 积压过多由调用方 guard 上限兜住 (imx6ull_sender.c 主循环),
+         * 触摸只是控制信号, 落后就丢, 不会拖住采集。
+         */
         if (ret == 1) {
-            last_frame_valid = 1;
-            if (t->replay_mode) {
-                /* 回放模式: 每凑齐一帧就返回, 保住逐帧时序 */
-                *out = last;
-                return 1;
-            }
+            *out = last;
+            return 1;
         }
     }
 }

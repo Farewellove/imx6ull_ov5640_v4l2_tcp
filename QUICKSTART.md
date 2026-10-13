@@ -87,7 +87,8 @@ cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && mkdir -p per
 **终端 B（板端）**
 
 ```bash
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && sh board_benchmark.sh /dev/video1 192.168.1.66 60 ./bench
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && sh board_benchmark.sh /dev/video1 192.168.1.66 60
+# 结果统一落在 logs/camera_sender/bench/ (第 4 参数可覆盖)
 ```
 
 ---
@@ -103,10 +104,12 @@ cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && mkdir -p per
 **终端 B（板端）**
 
 ```bash
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && sh board_zoom_bench.sh /dev/video1 192.168.1.66 60 ./bench_zoom
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && sh board_zoom_bench.sh /dev/video1 192.168.1.66 60
+# 结果统一落在 logs/camera_sender/zoom/
 ```
 
-> 结果落在 NFS 上，PC 侧路径：`/home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/bench*`
+> 结果统一落在 NFS 的 `/lib/modules/4.1.15/logs/<项目名>/` 下，PC 侧路径：
+> `/home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/`
 
 ---
 
@@ -115,19 +118,19 @@ cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && sh board_zoom_bench.sh /dev/v
 单档：
 
 ```bash
-cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && python3 performance_evaluation/scripts/analyze_stats.py /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/bench_zoom/zoom_2.0
+cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && python3 performance_evaluation/scripts/analyze_stats.py /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/zoom/zoom_2.0
 ```
 
 三档关键指标一次看完：
 
 ```bash
-cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && for z in 1.0 1.5 2.0; do echo "########## zoom ${z}x ##########"; python3 performance_evaluation/scripts/analyze_stats.py /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/bench_zoom/zoom_$z | grep -E 'render|display_fps|frames_rendered|gesture|frames_ok|gap|poll'; done
+cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && for z in 1.0 1.5 2.0; do echo "########## zoom ${z}x ##########"; python3 performance_evaluation/scripts/analyze_stats.py /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/zoom/zoom_$z | grep -E 'render|display_fps|frames_rendered|gesture|frames_ok|gap|poll'; done
 ```
 
 两侧对照（板端 vs PC）：
 
 ```bash
-cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && python3 performance_evaluation/scripts/analyze_stats.py --compare /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/bench/capture_tcp performance_evaluation/results/pc_bench
+cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && python3 performance_evaluation/scripts/analyze_stats.py --compare /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/bench/capture_tcp performance_evaluation/results/pc_bench
 ```
 
 `summary.csv` 关键列（该文件共 61 列，下面是任务书要的）：
@@ -146,25 +149,25 @@ cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && python3 perf
 三档一次拉出关键指标：
 
 ```bash
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/bench_zoom && for z in 1.0 1.5 2.0; do s=zoom_$z/summary.csv; printf "[zoom %s] 采集FPS=%s 显示FPS=%s mbps=%s cpu=%s rss_kb=%s | render mean/p95/p99/max=%s/%s/%s/%s us | gesture mean/p99=%s/%s us\n" "$z" "$(cut -d, -f6 $s|sed -n 2p)" "$(cut -d, -f43 $s|sed -n 2p)" "$(cut -d, -f20 $s|sed -n 2p)" "$(cut -d, -f21 $s|sed -n 2p)" "$(cut -d, -f22 $s|sed -n 2p)" "$(cut -d, -f56 $s|sed -n 2p)" "$(cut -d, -f57 $s|sed -n 2p)" "$(cut -d, -f58 $s|sed -n 2p)" "$(cut -d, -f59 $s|sed -n 2p)" "$(cut -d, -f60 $s|sed -n 2p)" "$(cut -d, -f61 $s|sed -n 2p)"; done
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/zoom && for z in 1.0 1.5 2.0; do s=zoom_$z/summary.csv; printf "[zoom %s] 采集FPS=%s 显示FPS=%s mbps=%s cpu=%s rss_kb=%s | render mean/p95/p99/max=%s/%s/%s/%s us | gesture mean/p99=%s/%s us\n" "$z" "$(cut -d, -f6 $s|sed -n 2p)" "$(cut -d, -f43 $s|sed -n 2p)" "$(cut -d, -f20 $s|sed -n 2p)" "$(cut -d, -f21 $s|sed -n 2p)" "$(cut -d, -f22 $s|sed -n 2p)" "$(cut -d, -f56 $s|sed -n 2p)" "$(cut -d, -f57 $s|sed -n 2p)" "$(cut -d, -f58 $s|sed -n 2p)" "$(cut -d, -f59 $s|sed -n 2p)" "$(cut -d, -f60 $s|sed -n 2p)" "$(cut -d, -f61 $s|sed -n 2p)"; done
 ```
 
 完整表头对照：
 
 ```bash
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/bench_zoom && head -1 zoom_1.0/summary.csv | tr ',' '\n' | nl
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/zoom && head -1 zoom_1.0/summary.csv | tr ',' '\n' | nl
 ```
 
 逐帧原始数据（缩放渲染耗时的分布来源，最后 6 列是 `gesture_us,render_us,zoom,view_x0,view_y0,render_path`）：
 
 ```bash
-ls -l /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/bench_zoom/zoom_1.5/ && head -3 /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/bench_zoom/zoom_1.5/capture_frames.csv
+Z=/home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/zoom; ls -l $Z/zoom_1.5/ && head -3 $Z/zoom_1.5/capture_frames.csv
 ```
 
 渲染路径分布抽查（`render_path` = 1 表示走了缩放渲染）：
 
 ```bash
-awk -F, 'NR==1{for(i=1;i<=NF;i++) if($i=="render_path") c=i; next} {n[$c]++} END{for(k in n) print "render_path="k" : "n[k]" 帧"}' /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/bench_zoom/zoom_1.5/capture_frames.csv
+awk -F, 'NR==1{for(i=1;i<=NF;i++) if($i=="render_path") c=i; next} {n[$c]++} END{for(k in n) print "render_path="k" : "n[k]" 帧"}' /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/zoom/zoom_1.5/capture_frames.csv
 ```
 
 ---
@@ -212,20 +215,20 @@ cd /home/why/zdyz/linux/IMX6ULL/Projects/imx6ull_ov5640_v4l2_tcp && grep -n '待
 
 ```bash
 # 纯采集基准（不发网络）
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 --capture-only --duration 60 --warmup 30 --quiet --stats-dir ./bench/capture_only
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 --capture-only --duration 60 --warmup 30 --quiet --stats-dir logs/camera_sender/bench/capture_only
 
 # 采集 + 发送
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir ./bench/capture_tcp
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir logs/camera_sender/bench/capture_tcp
 
 # 采集 + 发送 + LCD
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 -l --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir ./bench/capture_tcp_display
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 -l --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir logs/camera_sender/bench/capture_tcp_display
 
 # 固定 2.0x 缩放（不读触摸，只改一个变量）
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 -l --zoom-fixed 2.0 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir ./bench/zoom_2.0
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 -l --zoom-fixed 2.0 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir logs/camera_sender/zoom/zoom_2.0
 
 # 对照实验：加大缓冲
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 --buffers 6 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir ./bench/buf6
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 --buffers 6 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir logs/camera_sender/bench/buf6
 
 # 对照实验：请求 15fps
-cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 --set-fps 15 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir ./bench/fps15
+cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15 && ./imx6ull_sender -d /dev/video1 -s 192.168.1.66 -p 5000 --set-fps 15 --duration 60 --warmup 30 --quiet --io-timeout 5 --stats-dir logs/camera_sender/bench/fps15
 ```

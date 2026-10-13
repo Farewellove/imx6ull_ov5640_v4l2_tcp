@@ -349,7 +349,8 @@ mkdir -p performance_evaluation/results/pc_capture_tcp
 
 ```bash
 cd /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15
-sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench
+sh board_benchmark.sh /dev/video1 <PC_IP> 60
+# 结果统一落在 /lib/modules/4.1.15/logs/camera_sender/bench/
 ```
 
 脚本会依次跑：
@@ -374,17 +375,17 @@ sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench
 # 纯采集基准 (对照组, 与下一组除网络外参数必须完全一致)
 ./imx6ull_sender -d /dev/video1 --capture-only \
     --duration 60 --warmup 30 --quiet \
-    --stats-dir ./bench/capture_only
+    --stats-dir logs/camera_sender/bench/capture_only
 
 # 采集 + 发送
 ./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 \
     --duration 60 --warmup 30 --quiet --io-timeout 5 \
-    --stats-dir ./bench/capture_tcp
+    --stats-dir logs/camera_sender/bench/capture_tcp
 
 # 采集 + 发送 + LCD
 ./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 -l \
     --duration 60 --warmup 30 --quiet --io-timeout 5 \
-    --stats-dir ./bench/capture_tcp_display
+    --stats-dir logs/camera_sender/bench/capture_tcp_display
 ```
 
 **参数为什么这么选：**
@@ -421,7 +422,7 @@ python3 performance_evaluation/scripts/analyze_stats.py <某次测试的 stats �
 
 # 两侧对照（板端 bench/capture_tcp 与 PC 端目录）
 python3 performance_evaluation/scripts/analyze_stats.py --compare \
-    <bench/capture_tcp 目录> \
+    /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/bench/capture_tcp \
     performance_evaluation/results/pc_capture_tcp
 ```
 
@@ -602,10 +603,12 @@ cat /sys/class/graphics/fb0/bits_per_pixel
     --stats-dir performance_evaluation/results/pc_zoom
 
 # 板端一键跑完 1.0/1.5/2.0x + 无缩放对照组
-sh board_zoom_bench.sh /dev/video1 <PC_IP> 60 ./bench
+sh board_zoom_bench.sh /dev/video1 <PC_IP> 60
+# 结果统一落在 /lib/modules/4.1.15/logs/camera_sender/zoom/
 
 # 分析
-python3 performance_evaluation/scripts/analyze_stats.py ./bench/zoom_1.5
+python3 performance_evaluation/scripts/analyze_stats.py \
+    /home/why/zdyz/nfs/rootfs/lib/modules/4.1.15/logs/camera_sender/zoom/zoom_1.5
 ```
 
 要看的列（都在 `summary.csv` 与 `capture_frames.csv` 里）：
@@ -627,6 +630,10 @@ python3 performance_evaluation/scripts/analyze_stats.py ./bench/zoom_1.5
 | `[WARN] --touch/--zoom 只在本地显示上有意义` | 忘了加 `-l` | 加 `-l` |
 | 缩放方向反了 / 上下左右颠倒 | 面板装配方向不同 | `--touch-swap-xy` / `--touch-invert-x` / `--touch-invert-y` |
 | 手势不响应 | 触点数识别不对 | 启动日志的 `abs range` 是否合理；确认驱动是 Protocol B |
+| 双指捏合没反应，但统计里 `多指` 帧很多 | 面板多报一个**位置纹丝不动**的幽灵触点，`n>=3` 进不了双指分支 | 静止过滤会自动剔除（`touch_input.h: TOUCH_GHOST_STILL_FRAMES`）；用 `--touch-debug` 确认 |
+| 三指复位不触发 | 三指按住不动时第三指被静止过滤剔除，`n` 只有 2 | 复位判定用的是过滤前的 `n_raw`，不依赖过滤后的 `n`；需三指都"移动过"且持续 120ms |
+| 1.0× 下拖动没反应 | 图像 640×480 比屏幕 1024×600 小，`fb_view_clamp` 强制居中，无处可移 | **设计如此**，先放大再拖；水平方向要 `zoom > 1.6` 才能横移 |
+| 缩放回 1.0× 后四周残留旧像素 | fit 路径只 blit 图像区域，不碰四周 | 已修：从缩放切回 fit 时整屏清一次（`fb_display.c: clear_before_fit`） |
 | 画面偏蓝绿 | CSI 交换 R/B | 加 `--lcd-swap-rb` |
 | 放大到顶后画面出现空白条 | 不应发生（`fb_view_clamp` 保证） | 记录现场并回报；离线测试里已有逐帧断言覆盖 |
 | 缩放后帧率明显下降 | 渲染耗时超过帧周期 | 看 `render_p99_us` 与帧间隔对比；必要时降低采集分辨率 |

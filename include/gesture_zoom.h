@@ -46,6 +46,16 @@
 #define ZOOM_MIN_BASE_DIST     40.0
 /* 触发复位所需的手指数 */
 #define ZOOM_RESET_FINGERS     3
+/*
+ * 三指复位需要的"三指同时存在"持续时长。
+ * 不用帧数: 真实设备一次读取会返回一批积压帧, 这些帧的时间戳几乎相同,
+ * 帧数不等于时长 (4 帧可能只跨 1ms)。用帧自带的时间戳判时长才准确。
+ *
+ * 判定用 n_raw (静止过滤前的触点数) + n_moved (生涯内移动过的触点数):
+ *   - 三指按住不动时第三指会被静止过滤剔除, n 变成 2 → 复位永远不触发;
+ *   - 幽灵触点坐标从不变 (moved=0), 要求 n_moved>=3 即可把它排除。
+ */
+#define ZOOM_RESET_HOLD_US  120000   /* 120 ms */
 
 struct zoom_state {
     /* 视图 (对外直接可用) */
@@ -61,6 +71,7 @@ struct zoom_state {
     int      confirm_zoom;      /* 连续越过阈值的帧数 */
     int      confirm_dir;       /* +1 = 张开, -1 = 合拢, 0 = 未定 */
     int      reset_latched;     /* 三指复位本次按压是否已执行 */
+    uint64_t multi_start_us;    /* 本轮"三指同时存在"的起始时间 */
 
     /* 统计 */
     uint64_t frames_total;
