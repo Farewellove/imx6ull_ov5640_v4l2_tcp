@@ -1,0 +1,43 @@
+=== BUILD 2026-10-13T20:10:06+08:00 ===
+mkdir -p bin/arm
+  [ARM] CC    src/imx6ull_sender.c
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -c -o bin/arm/imx6ull_sender.o src/imx6ull_sender.c
+  [ARM] CC    src/v4l2_capture.c
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -c -o bin/arm/v4l2_capture.o src/v4l2_capture.c
+  [ARM] CC    src/tcp_socket.c
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -c -o bin/arm/tcp_socket.o src/tcp_socket.c
+  [ARM] CC    src/metrics.c
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -c -o bin/arm/metrics.o src/metrics.c
+  [ARM] CC    src/fb_display.c
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -c -o bin/arm/fb_display.o src/fb_display.c
+  [ARM] CC    src/touch_input.c
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -c -o bin/arm/touch_input.o src/touch_input.c
+  [ARM] CC    src/gesture_zoom.c
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -c -o bin/arm/gesture_zoom.o src/gesture_zoom.c
+  [ARM] LD    bin/arm/imx6ull_sender
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -o bin/arm/imx6ull_sender bin/arm/imx6ull_sender.o bin/arm/v4l2_capture.o bin/arm/tcp_socket.o bin/arm/metrics.o bin/arm/fb_display.o bin/arm/touch_input.o bin/arm/gesture_zoom.o -lm
+================================================================
+  ARM build complete!
+================================================================
+-rwxrwxr-x 1 why why 186K 10月 13 20:10 bin/arm/imx6ull_sender
+================================================================
+mkdir -p bin/pc
+  [PC]  CC    src/pc_receiver.c
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -c -o bin/pc/pc_receiver.o src/pc_receiver.c
+  [PC]  CC    src/v4l2_capture.c
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -c -o bin/pc/v4l2_capture.o src/v4l2_capture.c
+  [PC]  CC    src/tcp_socket.c
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -c -o bin/pc/tcp_socket.o src/tcp_socket.c
+  [PC]  CC    src/metrics.c
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -c -o bin/pc/metrics.o src/metrics.c
+  [PC]  LD    bin/pc/pc_receiver
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -o bin/pc/pc_receiver bin/pc/pc_receiver.o bin/pc/v4l2_capture.o bin/pc/tcp_socket.o bin/pc/metrics.o -lSDL2 -lm
+================================================================
+  PC build complete!
+================================================================
+-rwxrwxr-x 1 why why 203K 10月 13 20:10 bin/pc/pc_receiver
+================================================================
+================================================================
+  All builds complete!
+================================================================
+EXIT=0

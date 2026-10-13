@@ -17,11 +17,28 @@
 #define FRAME_PROTO_H
 
 #include <stdint.h>
+#include <string.h>
+#include <arpa/inet.h>
 
 /* 帧魔数: 收到帧头时先校验这个, 能在字节流错位时立刻发现 */
 #define FRAME_MAGIC     0x12345678
-/* 协议版本, 收发两端不一致说明编错了程序 */
-#define FRAME_VERSION   1
+/*
+ * 协议版本。
+ *
+ * 版本 2 的改动: 修正 timestamp_us 的线上编码。
+ *   版本 1 用 `(htonl(hi) << 32) | htonl(lo)` 的整数拼接来"序列化" 64 位
+ *   字段 —— 在小端主机上落盘字节是 [BE(lo)][BE(hi)], 在大端主机上却是
+ *   [BE(hi)][BE(lo)], 即同一份代码在不同字节序平台上产生不同线格式,
+ *   不符合"网络字节序"约定。实测字节对比 (ts = 0x00000001FFFFFFFF):
+ *       旧写法: FF FF FF FF 00 00 00 01
+ *       新写法: 00 00 00 01 FF FF FF FF
+ *   版本 2 改为逐字节写出高 32 位、再写低 32 位, 与主机字节序无关。
+ *
+ * 因此版本 1 与版本 2 的收发端不能混用: 新接收端会把版本 1 的帧判为
+ * bad_version 并明确报错, 而不是静默解析出错误的微秒时间戳。
+ * 升级时必须同时重新编译并部署板端与 PC 端。
+ */
+#define FRAME_VERSION   2
 
 /* ================================================================
  * 像素格式定义 (FOURCC)
@@ -82,6 +99,66 @@ struct frame_header {
 	uint32_t frame_id;     /* 帧序号, 从 0 递增, 用于发现丢帧 */
 	uint64_t timestamp_us; /* 采集时间戳 (微秒), 来源 V4L2 buffer timestamp */
 };
+
+/* ================================================================
+ * 序列化 / 反序列化 (单一实现, 收发两端共用)
+ *
+ * 放在头文件里的理由: 之前发送端和接收端各写了一份 htonl/ntohl 代码,
+ * 一旦两边不一致就会得到"能收帧但时间戳乱掉"这种很难查的问题。共用
+ * 一份实现可以从结构上排除这种分歧 —— 字节序只在这里定义一次。
+ * ================================================================ */
+
+/* 本机序 → 网络序 (写入 n, 不修改 h) */
+static inline void frame_header_hton(const struct frame_header *h,
+                                     struct frame_header *n)
+{
+	uint8_t *ts = (uint8_t *)&n->timestamp_us;
+	uint32_t hi = (uint32_t)(h->timestamp_us >> 32);
+	uint32_t lo = (uint32_t)(h->timestamp_us & 0xffffffffu);
+
+	n->magic       = htonl(h->magic);
+	n->version     = htonl(h->version);
+	n->header_size = htonl(h->header_size);
+	n->width       = htonl(h->width);
+	n->height      = htonl(h->height);
+	n->pixfmt      = htonl(h->pixfmt);
+	n->size        = htonl(h->size);
+	n->frame_id    = htonl(h->frame_id);
+
+	/* 64 位字段显式按字节写大端: 高 32 位在前, 低 32 位在后。
+	 * 不用 (htonl(hi)<<32)|htonl(lo) 的整数拼接 —— 那在不同字节序
+	 * 主机上会得到不同的内存字节序列 (这就是版本 1 的缺陷)。 */
+	ts[0] = (uint8_t)(hi >> 24);
+	ts[1] = (uint8_t)(hi >> 16);
+	ts[2] = (uint8_t)(hi >> 8);
+	ts[3] = (uint8_t)(hi);
+	ts[4] = (uint8_t)(lo >> 24);
+	ts[5] = (uint8_t)(lo >> 16);
+	ts[6] = (uint8_t)(lo >> 8);
+	ts[7] = (uint8_t)(lo);
+}
+
+/* 网络序 → 本机序 (从 n 读出到 h) */
+static inline void frame_header_ntoh(const struct frame_header *n,
+                                     struct frame_header *h)
+{
+	const uint8_t *ts = (const uint8_t *)&n->timestamp_us;
+
+	h->magic       = ntohl(n->magic);
+	h->version     = ntohl(n->version);
+	h->header_size = ntohl(n->header_size);
+	h->width       = ntohl(n->width);
+	h->height      = ntohl(n->height);
+	h->pixfmt      = ntohl(n->pixfmt);
+	h->size        = ntohl(n->size);
+	h->frame_id    = ntohl(n->frame_id);
+
+	h->timestamp_us =
+		((uint64_t)ts[0] << 56) | ((uint64_t)ts[1] << 48) |
+		((uint64_t)ts[2] << 40) | ((uint64_t)ts[3] << 32) |
+		((uint64_t)ts[4] << 24) | ((uint64_t)ts[5] << 16) |
+		((uint64_t)ts[6] << 8)  | ((uint64_t)ts[7]);
+}
 
 /* ================================================================
  * 辅助函数 (全部 static inline, 只在本头文件里给打印/判断用)

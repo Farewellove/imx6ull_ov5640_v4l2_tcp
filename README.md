@@ -2,40 +2,52 @@
 
 基于 i.MX6ULL 的 V4L2 摄像头采集、本地 LCD 显示与网络图传系统。
 
+> **只要命令、立刻要跑 → [`QUICKSTART.md`](QUICKSTART.md)**
+> （纯命令可直接复制粘贴，PC IP 已固定为 192.168.1.66）
+>
+> **所有交付材料的总入口 → [`performance_evaluation/README.md`](performance_evaluation/README.md)**
+> （一页纸核心结论 + 文档导航 + 快速命令 + 关键文件↔功能对照）
+>
+> **想直接跑通 → 看 [`performance_evaluation/USAGE.md`](performance_evaluation/USAGE.md)**
+> （按顺序照做的完整流程：环境 → 编译 → 部署 → 上板确认 → 跑通 → 性能测试 → 分析 → 排错）
+>
+> 本文是原理与细节参考：协议格式、格式协商、颜色排查、常见问题。
+
 ## 项目结构
 
 ```
 imx6ull_ov5640_v4l2_tcp/
 ├── include/
-│   ├── frame_proto.h      # TCP 帧协议定义
-│   ├── v4l2_capture.h     # V4L2 MMAP 采集 API
-│   ├── tcp_socket.h       # TCP Socket 封装 API
-│   └── fb_display.h       # Framebuffer LCD 显示 API
+│   ├── frame_proto.h      # TCP 帧协议定义 (v2) + 统一序列化
+│   ├── v4l2_capture.h     # V4L2 MMAP 采集 API + 帧率协商参数
+│   ├── tcp_socket.h       # TCP Socket 封装 API + 短收发统计
+│   ├── fb_display.h       # Framebuffer 显示 API + 缩放视图
+│   ├── metrics.h          # 统计模块 API
+│   ├── touch_input.h      # evdev MT Protocol B 触摸 API
+│   └── gesture_zoom.h     # 双指手势 → 缩放视图 API
 ├── src/
-│   ├── v4l2_info.c        # 摄像头能力查询工具 (⚠ 未被 Makefile 编译, 见下)
 │   ├── v4l2_capture.c     # V4L2 MMAP 采集实现
 │   ├── tcp_socket.c       # TCP Socket 实现 (send_all/recv_all)
-│   ├── fb_display.c       # Framebuffer LCD 显示实现
-│   ├── imx6ull_sender.c   # 板端采集 + LCD显示 + TCP 发送
-│   └── pc_receiver.c      # PC 端接收 + 保存
-├── tools/
-│   ├── v4l2_info.c        # 摄像头能力查询工具 (实际编译的是这一份)
-│   └── v4l2_format_test.c # 格式协商测试 (TRY_FMT/S_FMT/G_FMT)
+│   ├── fb_display.c       # Framebuffer 显示 + 最近邻缩放渲染
+│   ├── imx6ull_sender.c   # 板端采集 + LCD显示 + 手势缩放 + TCP 发送
+│   ├── pc_receiver.c      # PC 端接收 + 保存
+│   ├── metrics.c          # 统计: 分位数 / CPU / RSS / CSV
+│   ├── touch_input.c      # MT Protocol B 触摸状态机
+│   └── gesture_zoom.c     # 双指手势判定与边界钳制
+├── docs/                  # 面试审计报告 (源码侧 / 设备树侧)
+├── performance_evaluation/# 交付材料 (README/USAGE/AUDIT_AND_CHANGES/PERFORMANCE/RESUME)
 ├── Makefile
 └── README.md
 ```
 
-> **关于 `v4l2_info` 的两份源码**: `src/v4l2_info.c` 与 `tools/v4l2_info.c`
-> 内容相近，但 **Makefile 只编译 `tools/` 下那一份**
-> （规则 `$(ARM_DIR)/v4l2_info_tool.o: $(TOOLSDIR)/v4l2_info.c`），
-> 产出 `bin/arm/v4l2_info`。`src/v4l2_info.c` 目前是历史遗留、不参与构建，
-> 修改它不会有任何效果。实际使用的能力查询工具输出以 `tools/` 版本为准
-> （额外解析 colorspace/field，信息更全）。
+> **2026-10-13 清理**：已删除历史遗留死文件 `src/v4l2_info.c`，以及两个板端诊断工具
+> `tools/v4l2_info.c` / `tools/v4l2_format_test.c`（连同 `make arm-tools` 目标）。
+> 上板确认驱动/格式/帧率改由 `imx6ull_sender` 的**启动日志**承担，见
+> `performance_evaluation/USAGE.md` §4。备份：`~/backup/imx6ull_cleanup_20261013/`。
 
 ## 1. 项目功能
 
-- **v4l2_info**: 查询摄像头完整能力信息（QUERYCAP, G_FMT, G_PARM, ENUM_FMT, ENUM_FRAMESIZES, ENUM_FRAMEINTERVALS）
-- **imx6ull_sender**: 在 i.MX6ULL 板端通过 V4L2 MMAP 采集 OV5640 图像，可选同步显示到开发板 LCD，并以自定义帧协议通过 TCP 发送到 PC
+- **imx6ull_sender**: 在 i.MX6ULL 板端通过 V4L2 MMAP 采集 OV5640 图像，可选同步显示到开发板 LCD，并以自定义帧协议通过 TCP 发送到 PC；**可选整合 GT911 双指手势数字缩放（1.0×–2.0×，缩放只作用于显示阶段，不改变采集分辨率、不写入采集缓冲区）**；启动时会打印 `S_FMT`/`REQBUFS`/`G_PARM` 的**实际返回值**
 - **pc_receiver**: PC 端作为 TCP Server 接收图像帧，保存为 raw 文件；可选 SDL2 实时显示窗口 (`-d`)，支持多格式自动转换、`--force-*` 手动覆盖和按键切换调试
 
 ### 支持的像素格式
@@ -65,7 +77,6 @@ make arm
 ```
 
 输出目录 `bin/arm/`：
-- `bin/arm/v4l2_info`
 - `bin/arm/imx6ull_sender`
 
 ### 2.2 编译 PC 端程序
@@ -116,8 +127,8 @@ make clean
 # 查看 V4L2 设备
 ls -l /dev/video*
 
-# 查询摄像头能力
-./v4l2_info /dev/video1
+# 查询驱动/格式/帧率: 跑 1 帧, 读启动日志
+./imx6ull_sender -d /dev/video1 --capture-only -n 1
 ```
 
 ### 3.2 启动发送程序
@@ -183,7 +194,9 @@ ls -l /dev/video*
 
 使用 `-d` 参数会弹出一个 SDL2 窗口，实时显示摄像头画面：
 
-- **默认解码**: BGR565 LE（i.MX6ULL CSI R/B 通道交换）
+- **默认解码**: `auto` —— 直接按帧头里的 `hdr.pixfmt` 解码（代码中 `g_disp_override = 0`）。
+  若颜色异常，用 `--display-format` / `--swap-rb` 或窗口按键 1–8 手动覆盖。
+  > 注意: **不是**默认 BGR565。README 早期版本此处的写法与代码不符，已更正。
 - **多格式支持**: RGB565/RGB565X/BGR565/BGR565X/YUYV/UYVY 自动转换为 RGB888
 - **窗口标题实时显示**: `hdr=RGB565_LE | disp=BGR565_LE`
 - **按键切换调试**:
@@ -203,10 +216,10 @@ sudo apt install libsdl2-dev
 当颜色异常时，使用以下参数手动指定解码格式：
 
 ```bash
-# 默认 BGR565 (i.MX6ULL CSI R/B 已交换的推荐模式)
+# 默认: auto, 按帧头 hdr.pixfmt 解码
 ./pc_receiver -p 5000 -d
 
-# 显式指定 BGR565
+# 若颜色偏蓝绿 (i.MX6ULL CSI R/B 交换), 显式指定 BGR565
 ./pc_receiver -p 5000 -d --display-format bgr565
 ./pc_receiver -p 5000 -d --swap-rb
 
@@ -298,17 +311,19 @@ frames/
 #### Step 1: 查询摄像头能力
 
 ```bash
-./v4l2_info /dev/video1
+./imx6ull_sender -d /dev/video1 --capture-only -n 1
 ```
 
-观察输出中的 `ENUM_FMT` 部分，确认驱动支持哪些格式。
+观察启动日志里 `S_FMT` 的实际返回值，确认驱动接受了哪种格式。
+若请求的格式不被接受，程序会报错并打印驱动的实际返回值。
 
 #### Step 2: 测试格式协商
 
 ```bash
-./v4l2_format_test /dev/video1 640 480 rgb565
-./v4l2_format_test /dev/video1 640 480 yuyv
-./v4l2_format_test /dev/video1 640 480 uyvy
+# 逐个试 -f, 从启动日志看 S_FMT 是否被接受
+./imx6ull_sender -d /dev/video1 --capture-only -n 1 -f RGB565
+./imx6ull_sender -d /dev/video1 --capture-only -n 1 -f YUYV
+./imx6ull_sender -d /dev/video1 --capture-only -n 1 -f UYVY
 ```
 
 观察 `S_FMT` 和 `G_FMT` 返回的格式：
@@ -435,7 +450,7 @@ display test_frames/frame_000000.ppm  # ImageMagick
 ```c
 struct frame_header {
     uint32_t magic;         // 魔数: 0x12345678 (网络字节序)
-    uint32_t version;       // 协议版本: 1
+    uint32_t version;       // 协议版本: 2
     uint32_t header_size;   // 帧头大小: sizeof(struct frame_header) = 40
     uint32_t width;         // 图像宽度 (网络字节序)
     uint32_t height;        // 图像高度 (网络字节序)
@@ -445,6 +460,31 @@ struct frame_header {
     uint64_t timestamp_us;  // 采集时间戳，微秒 (网络字节序)
 };
 ```
+
+> **协议版本 2 相对版本 1 的唯一改动是 `timestamp_us` 的线上编码。**
+>
+> 版本 1 用 `(htonl(hi) << 32) | htonl(lo)` 的**整数拼接**来"序列化" 64 位字段。
+> `htonl` 返回的是数值，把它移位后写入内存时，落盘字节取决于主机字节序：
+> 小端机上为 `[BE(lo)][BE(hi)]`，大端机上为 `[BE(hi)][BE(lo)]` —— 同一份代码
+> 在不同字节序平台上产生不同线格式，不符合"网络字节序"约定。
+>
+> 版本 2 改为**逐字节**写出高 32 位、再写低 32 位，与主机字节序无关。
+> 收发两端与测试工具共用 `include/frame_proto.h` 中的
+> `frame_header_hton()` / `frame_header_ntoh()` 单一实现。
+>
+> 逐字节对比（同一 `timestamp_us = 0x00000001FFFFFFFF`，实测内存转储）：
+>
+> ```
+> 旧写法 (v1): FF FF FF FF 00 00 00 01   <- 低 32 位跑到了前面
+> 新写法 (v2): 00 00 00 01 FF FF FF FF   <- 正确的大端 64 位
+> ```
+>
+> 该结论由一次性协议单元测试得出，测试工具已移出项目；修复代码本身在
+> `include/frame_proto.h` 的 `frame_header_hton/ntoh`，可直接阅读核对。
+>
+> ⚠️ **版本 1 与版本 2 不能混用。** 新接收端会把版本 1 的帧判为
+> `bad_version` 并明确报错，而不是静默解析出错误的微秒时间戳。
+> **升级时必须同时重新编译并部署板端与 PC 端。**
 
 ### 7.3 字节序说明
 
@@ -529,8 +569,8 @@ chmod 666 /dev/video1
 
 **排查**:
 ```bash
-# 先用 v4l2_info 查询设备支持哪些格式
-./v4l2_info /dev/video1
+# 跑 1 帧看启动日志里 S_FMT 的实际返回值
+./imx6ull_sender -d /dev/video1 --capture-only -n 1
 ```
 
 然后选择一个驱动支持的格式和分辨率。OV5640 通常支持:
@@ -631,7 +671,7 @@ PC 端 `pc_receiver` 每帧会打印 `hdr=XXXX`：
 #### Step 5: 命令行快速试错
 
 ```bash
-# 默认就是 BGR565（i.MX6ULL CSI R/B 交换），通常不需要额外参数
+# 默认 auto（按帧头解码）；若板端 LCD 与 PC 画面颜色不一致，再按下文显式覆盖
 ./pc_receiver -p 5000 -o ./frames -d
 
 # 如果颜色仍然不对，依次尝试:
@@ -710,8 +750,8 @@ dmesg | grep -i "fb\|mxsfb"
 | `make arm`      | 只编译板端 imx6ull_sender                       |
 | `make arm-tools`| 编译诊断工具 v4l2_info + v4l2_format_test       |
 | `make pc`       | 只编译 PC 端 pc_receiver                        |
-| `make allboth`  | 同时编译 ARM + PC + tools                       |
-| `make install`  | 安装板端程序 + 工具到 NFS rootfs                 |
+| `make allboth`  | 同时编译 ARM + PC                                |
+| `make install`  | 安装板端程序到 NFS rootfs                        |
 | `make clean`    | 清理所有编译产物                                 |
 | `make help`     | 显示帮助                                        |
 
@@ -725,6 +765,83 @@ dmesg | grep -i "fb\|mxsfb"
 - **LCD 接口**: /dev/fb0 (Linux framebuffer)
 - **交叉编译器**: gcc-linaro-4.9.4-2017.01 (arm-linux-gnueabihf)
 
-## 12. 许可
+## 12. 性能统计与基准测试
+
+所有统计功能**默认关闭**，不开启时行为与之前完全一致。详细方法与真实数据见
+`performance_evaluation/`（`USAGE.md` / `AUDIT_AND_CHANGES.md` /
+`AUDIT_AND_CHANGES.md` / `PERFORMANCE.md` / `PERFORMANCE.md`）。
+
+### 12.1 板端 (`imx6ull_sender`)
+
+| 开关 | 说明 |
+|---|---|
+| `--stats-dir <dir>` | 开启统计，写 `capture_frames.csv` / `process_usage.csv` / `summary.csv` |
+| `--duration <sec>` | 跑满指定秒数后自动停止（便于定长复测） |
+| `--warmup <frames>` | 前 N 帧只写 CSV、不计入分位数（排除预热） |
+| `--stats-interval <sec>` | CPU/RSS 周期采样间隔（默认 1） |
+| `--capture-only` | 完全跳过 TCP，作为"网络是否影响采集"的对照组 |
+| `--quiet` | 关闭逐帧 stdout（避免控制台 I/O 干扰测量） |
+| `--io-timeout <sec>` | `SO_SNDTIMEO`，对端停读时不再永久阻塞 |
+| `--buffers <n>` | `REQBUFS` 数量（默认 3，上限 8）。缓冲越多，串行循环能吸收的发送抖动越多 |
+| `--set-fps <n>` | 通过 `VIDIOC_S_PARM` 请求帧率（0=不请求）。在 `S_FMT` 之后、`STREAMON` 之前下发；驱动不支持 `TIMEPERFRAME` 时只告警不失败 |
+| `--lcd-swap-rb` | LCD 写入 RGB565 时交换 R/B。若板端 LCD 画面偏蓝绿，打开此开关即可，**无需重新编译**；不影响发给 PC 的原始数据 |
+
+> 初始化日志里会打印 `nbufs actual` 与 `timeperframe` 的实际读回值。
+> **报告中的"缓冲数/帧率"必须以这两个实际值为准**，而不是命令行请求值（驱动可以改小缓冲数，也可以不接受 `S_PARM`）。
+> `summary.csv` 末尾附带配置快照列（`nbufs/req_buffers/req_fps/fps_num/fps_den/tf_supported/width/height/pixfmt/lcd/lcd_swap_rb`），使每个数据文件自带复现条件。
+
+```bash
+# 纯采集基准（60s，排除前 30 帧预热）
+./imx6ull_sender -d /dev/video1 --capture-only \
+    --duration 60 --warmup 30 --quiet --stats-dir ./bench/capture_only
+
+# 采集 + 发送基准
+./imx6ull_sender -d /dev/video1 -s <PC_IP> -p 5000 \
+    --duration 60 --warmup 30 --quiet --io-timeout 5 \
+    --stats-dir ./bench/capture_tcp
+```
+
+### 12.2 PC 端 (`pc_receiver`)
+
+| 开关 | 说明 |
+|---|---|
+| `-n <frames>` / `--max-frames <n>` | 收满 N 帧后自动退出 |
+| `--stats-dir <dir>` | 写 `network_stats.csv` / `process_usage.csv` / `summary.csv` |
+| `--no-save` | 不落盘帧文件（消除磁盘 I/O 对吞吐的干扰） |
+| `--quiet` | 关闭逐帧 stdout |
+| `--accept-timeout <sec>` | 无人连接时自行退出（自动化测试必需，避免永久阻塞在 `accept()`） |
+| `--io-timeout <sec>` | `SO_RCVTIMEO`/`SO_SNDTIMEO` |
+
+```bash
+./bin/pc/pc_receiver -p 5000 --no-save --quiet -n 1800 \
+    --accept-timeout 60 --io-timeout 30 \
+    --stats-dir performance_evaluation/results/pc_capture_tcp
+```
+
+### 12.3 测试流程与分析方法
+
+完整流程见 [`performance_evaluation/USAGE.md`](performance_evaluation/USAGE.md)，
+测试矩阵与验收标准见 [`performance_evaluation/PERFORMANCE.md`](performance_evaluation/PERFORMANCE.md)。
+
+```bash
+# 板端一键跑完全部用例（含采集基准/图传/显示/长时/对照实验）
+sh board_benchmark.sh /dev/video1 <PC_IP> 60 ./bench
+
+# 结果分析（--compare 可做板端与 PC 端两侧对照）
+python3 performance_evaluation/scripts/analyze_stats.py --compare <board_dir> <pc_dir>
+```
+
+### 12.4 指标口径（避免误读）
+
+- 帧率 = 成功 DQBUF 次数 ÷ 实测时长；与 `VIDIOC_G_PARM` 的目标帧率无关。
+- 吞吐只算有效 payload，**不含 40 字节帧头**；两种口径不可混用。
+- 板端 `T1/T2/T3`、PC 端 `R1/R2/R3` 都是**各自主机内的 `CLOCK_MONOTONIC`**，
+  **跨主机不可相减**，因此不报"端到端延迟"。
+- 协议**没有 CRC**，所以只能声称"完成 N 帧协议级重组"，不能声称"内容 100% 正确"。
+- CPU 百分比是**进程** CPU 时间比例（单核 = 100%），不是整机 CPU 占用。
+- CPU 百分比由**运行首尾两次 `/proc` 采样做差**得到，因此任意时长（包括短于采样间隔的）
+  都有值；`process_usage.csv` 的周期采样点则仍受 `--stats-interval` 限制。
+
+## 13. 许可
 
 本项目仅用于学习和测试目的。

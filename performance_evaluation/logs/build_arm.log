@@ -1,0 +1,9 @@
+  [ARM] CC    src/imx6ull_sender.c
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -c -o bin/arm/imx6ull_sender.o src/imx6ull_sender.c
+  [ARM] LD    bin/arm/imx6ull_sender
+arm-linux-gnueabihf-gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -o bin/arm/imx6ull_sender bin/arm/imx6ull_sender.o bin/arm/v4l2_capture.o bin/arm/tcp_socket.o bin/arm/metrics.o bin/arm/fb_display.o 
+================================================================
+  ARM build complete!
+================================================================
+-rwxrwxr-x 1 why why 123K 10月 11 13:32 bin/arm/imx6ull_sender
+================================================================

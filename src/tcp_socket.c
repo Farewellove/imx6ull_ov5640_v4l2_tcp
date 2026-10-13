@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -22,55 +23,111 @@
 /* ================================================================
  * send_all - 完整发送 len 字节
  * ================================================================ */
-int send_all(int fd, const void *buf, size_t len)
+int send_all_stat(int fd, const void *buf, size_t len, struct io_stats *st)
 {
     const char *ptr = (const char *)buf;
     size_t remaining = len;
+    size_t want;
     ssize_t n;
 
     while (remaining > 0) {
+        want = remaining;
         n = send(fd, ptr, remaining, MSG_NOSIGNAL);
+        if (st != NULL)
+            st->calls++;
         if (n < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR) {
+                if (st != NULL)
+                    st->eintr++;
                 continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (st != NULL)
+                    st->timeouts++;
+                fprintf(stderr, "[ERROR] send timed out (EAGAIN)\n");
+                return -1;
+            }
+            if (st != NULL)
+                st->errors++;
             perror("send");
             return -1;
         }
         if (n == 0) {
+            if (st != NULL)
+                st->errors++;
             fprintf(stderr, "[ERROR] send returned 0 (connection closed?)\n");
             return -1;
         }
+        if (st != NULL) {
+            st->bytes += (uint64_t)n;
+            /* 没有一次发完请求的全部字节 -> 记一次 partial */
+            if ((size_t)n < want)
+                st->partial++;
+        }
         ptr += n;
-        remaining -= n;
+        remaining -= (size_t)n;
     }
     return 0;
+}
+
+int send_all(int fd, const void *buf, size_t len)
+{
+    return send_all_stat(fd, buf, len, NULL);
 }
 
 /* ================================================================
  * recv_all - 完整接收 len 字节
  * ================================================================ */
-int recv_all(int fd, void *buf, size_t len)
+int recv_all_stat(int fd, void *buf, size_t len, struct io_stats *st)
 {
     char *ptr = (char *)buf;
     size_t remaining = len;
+    size_t want;
     ssize_t n;
 
     while (remaining > 0) {
+        want = remaining;
         n = recv(fd, ptr, remaining, 0);
+        if (st != NULL)
+            st->calls++;
         if (n < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR) {
+                if (st != NULL)
+                    st->eintr++;
                 continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (st != NULL)
+                    st->timeouts++;
+                fprintf(stderr, "[ERROR] recv timed out (EAGAIN)\n");
+                return -1;
+            }
+            if (st != NULL)
+                st->errors++;
             perror("recv");
             return -1;
         }
         if (n == 0) {
+            if (st != NULL)
+                st->errors++;
             fprintf(stderr, "[ERROR] recv returned 0 (peer disconnected)\n");
             return -1;
         }
+        if (st != NULL) {
+            st->bytes += (uint64_t)n;
+            /* 一次 recv 只拿到部分数据 -> 需要跨调用重组 */
+            if ((size_t)n < want)
+                st->partial++;
+        }
         ptr += n;
-        remaining -= n;
+        remaining -= (size_t)n;
     }
     return 0;
+}
+
+int recv_all(int fd, void *buf, size_t len)
+{
+    return recv_all_stat(fd, buf, len, NULL);
 }
 
 /* ================================================================
@@ -119,6 +176,44 @@ int tcp_client_connect(const char *ip, int port)
 
     printf("[INFO] Connected to %s:%d (fd=%d)\n", ip, port, fd);
     return fd;
+}
+
+/* ================================================================
+ * tcp_set_timeouts - 设置 SO_RCVTIMEO / SO_SNDTIMEO
+ *
+ * 宏名在各平台历史上分别是 SO_RCVTIMEO / SO_RCVTIMEO_OLD, 这里做个兜底,
+ * 避免在只有旧宏的头文件上编译失败。
+ * ================================================================ */
+#ifndef SO_RCVTIMEO
+#define SO_RCVTIMEO 20        /* Linux 通用值 */
+#endif
+#ifndef SO_SNDTIMEO
+#define SO_SNDTIMEO 21
+#endif
+
+int tcp_set_timeouts(int fd, int recv_sec, int send_sec)
+{
+    int ret = 0;
+
+    if (recv_sec > 0) {
+        struct timeval tv;
+        tv.tv_sec  = recv_sec;
+        tv.tv_usec = 0;
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+            perror("setsockopt SO_RCVTIMEO");
+            ret = -1;
+        }
+    }
+    if (send_sec > 0) {
+        struct timeval tv;
+        tv.tv_sec  = send_sec;
+        tv.tv_usec = 0;
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+            perror("setsockopt SO_SNDTIMEO");
+            ret = -1;
+        }
+    }
+    return ret;
 }
 
 /* ================================================================

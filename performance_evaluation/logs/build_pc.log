@@ -1,0 +1,16 @@
+mkdir -p bin/pc
+  [PC]  CC    src/pc_receiver.c
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -c -o bin/pc/pc_receiver.o src/pc_receiver.c
+  [PC]  CC    src/v4l2_capture.c
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -c -o bin/pc/v4l2_capture.o src/v4l2_capture.c
+  [PC]  CC    src/tcp_socket.c
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -c -o bin/pc/tcp_socket.o src/tcp_socket.c
+  [PC]  CC    src/metrics.c
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -c -o bin/pc/metrics.o src/metrics.c
+  [PC]  LD    bin/pc/pc_receiver
+gcc -Wall -Wextra -O2 -g -Iinclude -std=gnu99 -DENABLE_SDL_DISPLAY -D_REENTRANT -I/usr/include/SDL2 -o bin/pc/pc_receiver bin/pc/pc_receiver.o bin/pc/v4l2_capture.o bin/pc/tcp_socket.o bin/pc/metrics.o -lSDL2 -lm
+================================================================
+  PC build complete!
+================================================================
+-rwxrwxr-x 1 why why 195K 10月 11 13:31 bin/pc/pc_receiver
+================================================================

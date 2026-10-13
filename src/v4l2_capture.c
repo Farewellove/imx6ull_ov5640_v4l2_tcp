@@ -41,19 +41,85 @@ int xioctl(int fd, int request, void *arg)
 }
 
 /* ================================================================
- * v4l2_init - 完整初始化 V4L2 采集
+ * 帧率协商辅助 (VIDIOC_G_PARM / VIDIOC_S_PARM)
+ *
+ * 为什么单列出来: 帧率既影响带宽也影响"看起来能跑多快", 但没有帧率
+ * 就说不清"采集 30fps 是驱动给的还是我请求的"。因此读回值一定要
+ * 记录, 而且不能因为驱动不支持就把整个初始化判失败。
+ * ================================================================ */
+
+/* 读回当前 timeperframe 到 ctx (失败只静默返回, 调用者按 0 处理) */
+static void v4l2_read_parm(struct v4l2_context *ctx)
+{
+	struct v4l2_streamparm parm;
+
+	memset(&parm, 0, sizeof(parm));
+	parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	if (xioctl(ctx->fd, VIDIOC_G_PARM, &parm) < 0)
+		return;
+
+	ctx->fps_supported =
+		(parm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME) ? 1 : 0;
+	ctx->fps_num = parm.parm.capture.timeperframe.numerator;
+	ctx->fps_den = parm.parm.capture.timeperframe.denominator;
+}
+
+/* 请求帧率。返回 0 = 已被驱动接受; -1 = 不支持或失败 (非致命) */
+static int v4l2_request_fps(struct v4l2_context *ctx, uint32_t fps)
+{
+	struct v4l2_streamparm parm;
+
+	memset(&parm, 0, sizeof(parm));
+	parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+	if (xioctl(ctx->fd, VIDIOC_G_PARM, &parm) < 0) {
+		fprintf(stderr, "[WARN] VIDIOC_G_PARM failed, cannot set fps\n");
+		return -1;
+	}
+	if (!(parm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME)) {
+		fprintf(stderr, "[WARN] driver does not declare TIMEPERFRAME, "
+		        "fps request ignored\n");
+		return -1;
+	}
+
+	parm.parm.capture.timeperframe.numerator   = 1;
+	parm.parm.capture.timeperframe.denominator = fps;
+
+	if (xioctl(ctx->fd, VIDIOC_S_PARM, &parm) < 0) {
+		perror("VIDIOC_S_PARM");
+		return -1;
+	}
+	return 0;
+}
+
+/* ================================================================
+ * v4l2_init_ex - 完整初始化 V4L2 采集
  *
  * 重要: S_FMT 之后始终使用驱动实际返回的 pixfmt/width/height，
  * 即使与用户请求不同。不再将格式不匹配视为 fatal error。
+ *
+ * 步骤: open → QUERYCAP → G_FMT(参考) → S_FMT(★权威) →
+ *       S_PARM(可选) → G_PARM(记录实际帧率) → REQBUFS → mmap → QBUF
+ *       → STREAMON
  * ================================================================ */
-int v4l2_init(struct v4l2_context *ctx, const char *devname,
-              uint32_t width, uint32_t height, uint32_t pixfmt)
+int v4l2_init_ex(struct v4l2_context *ctx,
+                 const struct v4l2_init_params *p)
 {
 	struct v4l2_capability cap;
 	struct v4l2_format fmt;
 	struct v4l2_requestbuffers req;
 	struct v4l2_buffer buf;
+	const char *devname;
+	uint32_t width, height, pixfmt;
 	int i;
+
+	if (p == NULL || p->devname == NULL)
+		return -1;
+
+	devname = p->devname;
+	width   = p->width;
+	height  = p->height;
+	pixfmt  = p->pixfmt;
 
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->fd = -1;
@@ -159,11 +225,42 @@ int v4l2_init(struct v4l2_context *ctx, const char *devname,
 		       ctx->pixfmt, (char *)&ctx->pixfmt);
 	}
 
+	/*
+	 * 3.5 帧率协商 (可选)。
+	 *
+	 * 顺序必须是 S_FMT 之后: 有些驱动 (如本项目的 ov5640) 在 s_parm 里会
+	 * 重新下发模式寄存器, 若先设帧率再设格式, 格式可能被覆盖回默认值。
+	 * 也必须在 STREAMON 之前: 流已启动后再改帧率通常不生效。
+	 *
+	 * 失败不致命 —— 很多驱动只支持离散帧率, 甚至完全不实现
+	 * V4L2_CAP_TIMEPERFRAME, 此时继续用驱动默认帧率即可。
+	 */
+	if (p->fps > 0) {
+		printf("[INFO] Requesting %u fps via VIDIOC_S_PARM...\n", p->fps);
+		if (v4l2_request_fps(ctx, p->fps) == 0)
+			printf("[INFO] S_PARM accepted (requested %u fps)\n",
+			       p->fps);
+		else
+			printf("[WARN] S_PARM not accepted, keep driver default\n");
+	}
+
+	/* 无论是否请求过, 都读回实际值: 报告里"帧率"必须以这里为准 */
+	v4l2_read_parm(ctx);
+	if (ctx->fps_num > 0 && ctx->fps_den > 0)
+		printf("[INFO] Actual timeperframe = %u/%u (%.2f fps), "
+		       "TIMEPERFRAME %s\n",
+		       ctx->fps_num, ctx->fps_den,
+		       (double)ctx->fps_den / (double)ctx->fps_num,
+		       ctx->fps_supported ? "supported" : "NOT supported");
+	else
+		printf("[WARN] G_PARM returned no valid timeperframe\n");
+
 	/* 4. REQBUFS */
 	memset(&req, 0, sizeof(req));
 	req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	req.memory = V4L2_MEMORY_MMAP;
-	req.count  = 3;
+	req.count  = (p->nbufs > 0) ? (uint32_t)p->nbufs
+	                            : (uint32_t)V4L2_DEFAULT_BUFFERS;
 
 	if (xioctl(ctx->fd, VIDIOC_REQBUFS, &req) < 0) {
 		perror("VIDIOC_REQBUFS");
@@ -247,14 +344,42 @@ fail_fd:
 }
 
 /* ================================================================
- * v4l2_get_frame - poll + DQBUF 获取一帧
+ * v4l2_init - 兼容旧接口 (buffer 数量取默认 3, 不请求帧率)
  * ================================================================ */
-int v4l2_get_frame(struct v4l2_context *ctx, void **data, size_t *size,
-                   int *index, uint64_t *timestamp, int timeout_ms)
+int v4l2_init(struct v4l2_context *ctx, const char *devname,
+              uint32_t width, uint32_t height, uint32_t pixfmt)
+{
+	struct v4l2_init_params p;
+
+	memset(&p, 0, sizeof(p));
+	p.devname = devname;
+	p.width   = width;
+	p.height  = height;
+	p.pixfmt  = pixfmt;
+	p.nbufs   = V4L2_DEFAULT_BUFFERS;
+
+	return v4l2_init_ex(ctx, &p);
+}
+
+/* ================================================================
+ * v4l2_get_frame_info - poll + DQBUF 获取一帧及完整元信息
+ *
+ * 相比旧版多做两件事:
+ *   1. 把驱动的 sequence / flags 带出来 (统计帧序号跳变必需)
+ *   2. 校验 bytesused <= mapped length —— 驱动若报错长度, 直接读
+ *      bytesused 字节会越界读用户态映射, 这里提前拦住
+ * ================================================================ */
+int v4l2_get_frame_info(struct v4l2_context *ctx, struct v4l2_frame *fr,
+                        int timeout_ms)
 {
 	struct pollfd fds[1];
 	struct v4l2_buffer buf;
 	int ret;
+
+	if (fr == NULL)
+		return -1;
+	memset(fr, 0, sizeof(*fr));
+	fr->index = -1;
 
 	fds[0].fd     = ctx->fd;
 	fds[0].events = POLLIN;
@@ -297,11 +422,43 @@ int v4l2_get_frame(struct v4l2_context *ctx, void **data, size_t *size,
 		return -1;
 	}
 
-	*data      = ctx->buf_mmap[buf.index];
-	*size      = buf.bytesused;
-	*index     = buf.index;
-	*timestamp = buf.timestamp.tv_sec * 1000000ULL + buf.timestamp.tv_usec;
+	/* bytesused 不能超过该 buffer 的映射长度, 否则后续读取越界 */
+	if (buf.bytesused > ctx->buf_len[buf.index]) {
+		fprintf(stderr,
+		        "[ERROR] DQBUF index=%u bytesused=%u > mapped_len=%zu, "
+		        "drop frame\n",
+		        buf.index, buf.bytesused, ctx->buf_len[buf.index]);
+		return -1;
+	}
 
+	fr->data         = ctx->buf_mmap[buf.index];
+	fr->bytesused    = buf.bytesused;
+	fr->buf_len      = ctx->buf_len[buf.index];
+	fr->index        = (int)buf.index;
+	fr->sequence     = buf.sequence;
+	fr->flags        = buf.flags;
+	fr->timestamp_us = (uint64_t)buf.timestamp.tv_sec * 1000000ULL
+	                   + (uint64_t)buf.timestamp.tv_usec;
+
+	return 0;
+}
+
+/* ================================================================
+ * v4l2_get_frame - 兼容旧接口, 内部走 v4l2_get_frame_info
+ * ================================================================ */
+int v4l2_get_frame(struct v4l2_context *ctx, void **data, size_t *size,
+                   int *index, uint64_t *timestamp, int timeout_ms)
+{
+	struct v4l2_frame fr;
+	int ret = v4l2_get_frame_info(ctx, &fr, timeout_ms);
+
+	if (ret != 0)
+		return ret;
+
+	if (data)      *data      = fr.data;
+	if (size)      *size      = fr.bytesused;
+	if (index)     *index     = fr.index;
+	if (timestamp) *timestamp = fr.timestamp_us;
 	return 0;
 }
 
